@@ -72,11 +72,11 @@ Keys of every destination:
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `type` | (required) | `command` or `webhook`. |
+| `type` | (required) | `command`, `webhook` or `openclaw`. |
 | `events` | `["mail.new"]` | Event types, with shell patterns such as `mail.*`. |
 | `accounts` | all | Only events of these accounts. |
 | `enabled` | `true` | `false` pauses the destination: its history stays, nothing new is queued for it, and its pending deliveries wait. Events that arrive while it is disabled are not queued later; use `uni-mail dispatch replay <destination> --since ...` after enabling it again. |
-| `timeout_seconds` | 60 (command), 15 (webhook) | The limit of one attempt. |
+| `timeout_seconds` | 60 (command), 15 (webhook), 900 (openclaw) | The limit of one attempt. |
 | `retry` | `dispatch.retry` | `max_attempts`, `initial_seconds`, `max_seconds` for this destination. |
 
 Command keys: `argv` (a list; the first item an absolute path), `env` (extra
@@ -86,6 +86,12 @@ Webhook keys: `url`, exactly one of `secret_file` (an absolute path, read at
 each attempt, so a rotation needs no restart) or `secret_env` (a variable in
 the dispatcher's environment), `allow_private_network` (default `false`),
 `allow_http` (default `false`).
+
+OpenClaw keys: the webhook keys, plus `agent_id` and `session_key` (both
+required). The destination calls OpenClaw's `POST /hooks/agent` with a bearer
+token in one persistent conversation, and only a finished run (`completion.status`
+`ok`) counts as delivered; an ambiguous outcome is dead, not retried. See
+[integrations/openclaw](../integrations/openclaw/README.md).
 
 The dispatcher reads the config at start. Restart `uni-mail-dispatch` after a
 change; `uni-mail dispatch check` validates it first.

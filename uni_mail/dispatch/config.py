@@ -29,7 +29,8 @@ from ..config import ConfigError
 DEFAULT_STATE_DIR = "/var/lib/uni-mail-dispatch"
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
-KINDS = ("command", "webhook")
+KINDS = ("command", "webhook", "openclaw")
+HTTP_KINDS = ("webhook", "openclaw")
 # sysexits EX_USAGE and EX_DATAERR: the command says that a retry cannot help.
 DEFAULT_PERMANENT_EXIT_CODES = (64, 65)
 
@@ -65,6 +66,9 @@ class Destination:
     secret_env: str = ""
     allow_private_network: bool = False
     allow_http: bool = False
+    # openclaw
+    agent_id: str = ""
+    session_key: str = ""
 
     def wants(self, event_type: str, account: str) -> bool:
         from ..events import matches
@@ -143,9 +147,11 @@ def parse_destination(name: str, raw: Any, retry: Retry) -> Destination:
     known = {"type", "events", "accounts", "enabled", "timeout_seconds", "retry"}
     known |= {"argv", "env", "working_directory", "permanent_exit_codes"} if kind == "command" else \
         {"url", "secret_file", "secret_env", "allow_private_network", "allow_http"}
+    if kind == "openclaw":
+        known |= {"agent_id", "session_key"}
     unknown = sorted(set(raw) - known)
     _require(not unknown, f"{what}: unknown key(s) {', '.join(unknown)} for a {kind} destination")
-    timeout = float(raw.get("timeout_seconds", 60 if kind == "command" else 15))
+    timeout = float(raw.get("timeout_seconds", {"command": 60, "openclaw": 900}.get(kind, 15)))
     _require(1 <= timeout <= 3600, f"{what}.timeout_seconds must be 1 to 3600")
     common: dict[str, Any] = {
         "name": name,
@@ -179,8 +185,14 @@ def parse_destination(name: str, raw: Any, retry: Retry) -> Destination:
     _require(bool(secret_file) != bool(secret_env), f"{what} needs exactly one of secret_file and secret_env")
     _require(not secret_file or os.path.isabs(secret_file), f"{what}.secret_file must be an absolute path")
     _require(not secret_env or bool(ENV_NAME.fullmatch(secret_env)), f"{what}.secret_env must be a variable name")
+    extra: dict[str, Any] = {}
+    if kind == "openclaw":
+        for key in ("agent_id", "session_key"):
+            value = raw.get(key)
+            _require(isinstance(value, str) and bool(value.strip()), f"{what}.{key} is required and must be text")
+            extra[key] = value.strip()
     return Destination(**common, url=url, secret_file=secret_file, secret_env=secret_env,
-                       allow_private_network=bool(raw.get("allow_private_network", False)), allow_http=allow_http)
+                       allow_private_network=bool(raw.get("allow_private_network", False)), allow_http=allow_http, **extra)
 
 
 def parse(raw: Any) -> DispatchConfig:

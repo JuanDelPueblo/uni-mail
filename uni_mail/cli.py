@@ -173,14 +173,14 @@ def run_dispatch(args: argparse.Namespace) -> Any:
     if command == "check":
         problems = {}
         for name, destination in dispatch_cfg.destinations.items():
-            if destination.kind == "webhook":
+            if destination.kind in ("webhook", "openclaw"):
                 from .dispatch.webhook import standard_key
 
                 try:
                     secret = destination.secret()
                     if not secret:
                         problems[name] = f"the secret variable {destination.secret_env} is empty"
-                    else:
+                    elif destination.kind == "webhook":
                         standard_key(secret)
                 except ConfigError as error:
                     problems[name] = str(error)

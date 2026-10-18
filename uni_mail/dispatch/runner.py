@@ -25,7 +25,8 @@ from typing import Any
 from .. import events
 from ..client import Client, MailServiceError
 from .command import CommandSink
-from .config import Destination, DispatchConfig
+from .config import HTTP_KINDS, Destination, DispatchConfig
+from .openclaw import OpenClawSink
 from .queue import Queue
 from .sinks import Result, redact
 from .webhook import WebhookSink
@@ -42,6 +43,8 @@ LEASE_EXTRA = 60.0
 def make_sink(destination: Destination, secrets: list[str]) -> Any:
     if destination.kind == "command":
         return CommandSink(destination, secrets)
+    if destination.kind == "openclaw":
+        return OpenClawSink(destination)
     return WebhookSink(destination)
 
 
@@ -74,7 +77,7 @@ class Dispatcher:
     def _secrets(self) -> list[str]:
         found = []
         for destination in self.cfg.destinations.values():
-            if destination.kind == "webhook":
+            if destination.kind in HTTP_KINDS:
                 try:
                     found.append(destination.secret())
                 except Exception:  # noqa: BLE001 - only for redaction

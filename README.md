@@ -16,6 +16,7 @@ gets an event, reads the mail through MCP, and decides what to do.
 | `deploy/` | systemd units (system services, and user services in `deploy/user/`), sysusers, tmpfiles and a config example. |
 | `Containerfile`, `deploy/podman/` | A container image and rootless Podman Quadlet units. |
 | `integrations/nanobot/` | Optional examples: a command that runs `nanobot trigger`, and a webhook receiver. |
+| `integrations/openclaw/` | Optional example: the native `openclaw` destination and the MCP connection. |
 | `integrations/hermes/` | Optional example: Hermes Agent with the MCP tools and a webhook route. |
 
 The daemon and the dispatcher use only the Python standard library (Python
@@ -94,7 +95,10 @@ with its own queue, retries and acknowledgement:
 - **command**: runs a configured program with the event JSON on stdin; exit
   code 0 acknowledges;
 - **webhook**: a signed HTTPS POST (HMAC-SHA256, also as a Standard Webhooks
-  signature); a 2xx answer acknowledges.
+  signature); a 2xx answer acknowledges;
+- **openclaw**: one agent turn per event in a shared OpenClaw conversation;
+  acknowledged only when the run has finished
+  ([integrations/openclaw](integrations/openclaw/README.md)).
 
 ```json
 "dispatch": {

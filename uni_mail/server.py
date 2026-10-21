@@ -74,6 +74,7 @@ class Service:
         self.logins = auth.LoginFlow(self.tokens)
         self.settings = settings.Settings(cfg.state_dir, cfg.base) if cfg.web_settings else None
         self.settings_errors: dict[str, str] = {}
+        self.ledger = send.ForwardLedger(cfg.state_dir / "forwarded.jsonl")
         self.accounts: dict[str, MailAccount] = {}
         self.threads: list[threading.Thread] = []
         self._started = False
@@ -412,6 +413,65 @@ class Service:
         if refused:
             result["refused"] = refused
             log.warning("sent mail %s: the server refused %s", message_id, sorted(refused))
+        return result
+
+    def op_forward(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send an indexed message, as a new message from `account`, to the recipients. The original stays untouched.
+
+        A mail that was already forwarded to an address is not sent to it again, unless `force` is set."""
+        record = self._record(request.get("id"))
+        sender = self._sender(str(request.get("account") or ""))
+        to = send.parse_addresses(request.get("to"), "to")
+        if not to:
+            raise RequestError("to must name at least one recipient")
+        if len(to) > send.MAX_RECIPIENTS:
+            raise RequestError(f"at most {send.MAX_RECIPIENTS} recipients")
+        note = request.get("note") or ""
+        if not isinstance(note, str) or len(note) > send.MAX_NOTE:
+            raise RequestError(f"note must be text of at most {send.MAX_NOTE} characters")
+        force = bool(request.get("force"))
+        source = self._account(record["account"])
+        with self.ledger.lock:
+            done = set() if force else self.ledger.done(record["id"])
+            skipped = [address for address in to if address.lower() in done]
+            targets = [address for address in to if address.lower() not in done]
+            if not targets:
+                log.info("forward skipped, already forwarded: account=%s mail_id=%s to=%s", sender.name, record["id"], skipped)
+                return {"id": record["id"], "forwarded": False, "already_forwarded": skipped,
+                        "message": f"{record['id']} was already forwarded to {', '.join(skipped)}; nothing was sent"}
+            parts: list[Any] = []
+            omitted: list[str] = []
+            if record["size"] <= source.cfg.max_part_mb * 1024 * 1024:
+                text, parts = send.forwarded_content(source.fetch_message(record))
+            else:
+                # Too big to fetch whole: forward the text, and name the attachments that stay behind.
+                text = source.body(record)
+                omitted = [f"{item['name']} ({item['size'] // 1024} KiB)" for item in attachments(record)]
+            origin = {"account": source.cfg.address, "sender": record["sender"], "date": record["date"],
+                      "subject": record["subject"]}
+            try:
+                reply_to = send.parse_addresses(record["sender"], "the sender of the original")
+            except send.SendError:
+                reply_to = []
+            limit = min(send.MAX_FORWARD_ATTACHMENTS, source.cfg.max_part_mb * 1024 * 1024)
+            message, omitted = send.build_forward(sender.cfg.address, targets, reply_to, origin, text, parts,
+                                                  str(note), limit, omitted)
+            refused = send.deliver(sender.cfg.address, sender.provider, sender.session, message, targets, self.smtp_factory)
+            self.ledger.record(record["id"], [address for address in targets if address not in refused], sender.name,
+                               str(message["Message-ID"]))
+        message_id = str(message["Message-ID"])
+        # The body is never logged.
+        log.info("forwarded mail: account=%s mail_id=%s message_id=%s to=%s subject=%r", sender.name, record["id"], message_id,
+                 targets, str(message["Subject"])[:200])
+        result: dict[str, Any] = {"id": record["id"], "forwarded": True, "account": sender.name, "from": sender.cfg.address,
+                                  "message_id": message_id, "to": targets, "subject": str(message["Subject"])}
+        if skipped:
+            result["already_forwarded"] = skipped
+        if omitted:
+            result["attachments_omitted"] = omitted
+        if refused:
+            result["refused"] = refused
+            log.warning("forwarded mail %s: the server refused %s", message_id, sorted(refused))
         return result
 
     def _settings(self) -> settings.Settings:

@@ -475,6 +475,23 @@ class MailAccount:
         raw = self._with_action(operation)
         return mime.decode_transfer(raw, part.encoding, partial=bool(limit) and part.size > (limit or 0))
 
+    def fetch_message(self, record: dict[str, Any]) -> bytes:
+        """The whole raw message. BODY.PEEK[] leaves the read state and every other flag as they are."""
+        max_bytes = self.cfg.max_part_mb * 1024 * 1024
+        if record["size"] > max_bytes:
+            raise MailError(f"the message is {record['size'] // 1048576} MiB; the limit is {self.cfg.max_part_mb} MiB")
+
+        def operation(imap: imaplib.IMAP4) -> bytes:
+            self._open(imap, record, writable=False)
+            data = _check(imap.uid("FETCH", str(record["uid"]), "(BODY.PEEK[])"), "FETCH message")
+            responses = parse_fetch(data)
+            if not responses:
+                raise MailError("the message is no longer on the server")
+            raw = section(responses[0], "BODY[]")
+            return raw if isinstance(raw, bytes) else str(raw or "").encode()
+
+        return self._with_action(operation)
+
     def body(self, record: dict[str, Any]) -> str:
         cached = self.store.read_cache(record["id"], "body.txt")
         if cached is not None:

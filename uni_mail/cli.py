@@ -85,6 +85,13 @@ def parser() -> argparse.ArgumentParser:
     send.add_argument("--reply-to-message", metavar="MAIL_ID", default="",
                       help="reply to an indexed message: sets In-Reply-To and References, and --to defaults to its sender")
 
+    forward = sub.add_parser("forward", help="forward an indexed message as a new message sent from an account")
+    forward.add_argument("mail_id")
+    forward.add_argument("--account", required=True, metavar="SENDER", help="the account that sends it (not necessarily the one that holds the mail)")
+    forward.add_argument("--to", action="append", required=True, metavar="ADDRESS", help="a recipient; repeat the option for more")
+    forward.add_argument("--note", default="", help="a short line to add above the forwarded text")
+    forward.add_argument("--force", action="store_true", help="forward again to an address that already got this mail")
+
     check = sub.add_parser("send-check", help="sign in to the SMTP server of an account without sending anything")
     check.add_argument("account")
 
@@ -300,6 +307,8 @@ def run(args: argparse.Namespace) -> Any:
     if command == "send":
         return client.send(args.account, args.to, args.subject, _body(args), args.cc,
                            args.bcc, args.html, args.reply_to_message)
+    if command == "forward":
+        return client.forward(args.mail_id, args.account, args.to, args.note, args.force)
     if command == "send-check":
         return client.send_check(args.account)
     if command == "events":

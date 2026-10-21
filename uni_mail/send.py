@@ -10,10 +10,17 @@ not append one itself.
 
 from __future__ import annotations
 
+import email
+import email.policy
+import json
+import os
 import re
 import smtplib
 import ssl
-from email.message import EmailMessage
+import threading
+import time
+from pathlib import Path
+from email.message import EmailMessage, Message
 from email.utils import formatdate, getaddresses, make_msgid
 from typing import Any, Callable
 
@@ -22,6 +29,9 @@ from . import auth, mime
 MAX_SUBJECT = 998
 MAX_BODY_CHARS = 500_000
 MAX_RECIPIENTS = 50
+MAX_NOTE = 1000
+# The attachments of a forwarded message together. Gmail refuses a message over 25 MiB, and base64 adds a third.
+MAX_FORWARD_ATTACHMENTS = 15 * 1024 * 1024
 SMTP_TIMEOUT = 60
 ADDRESS = re.compile(r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.[A-Za-z]{2,}")
 
@@ -84,6 +94,133 @@ def build_message(sender: str, to: list[str], cc: list[str], subject: str, body:
     else:
         message.set_content(body)
     return message
+
+
+def forward_subject(original: str) -> str:
+    """"Fwd: " and the original subject, with no second prefix when it already has one."""
+    cleaned = " ".join(re.sub(r"^(?:\s*(?:fwd?|fw)\s*:)+", "", original or "", flags=re.IGNORECASE).split())
+    return ("Fwd: " + (cleaned or "(no subject)"))[:MAX_SUBJECT]
+
+
+def _line(value: str) -> str:
+    return " ".join(re.sub(r"[\x00-\x1f\x7f]+", " ", value or "").split())
+
+
+def _text_of(part: Message) -> str:
+    payload = part.get_payload(decode=True)
+    return mime.decode_text(payload if isinstance(payload, bytes) else b"", part.get_content_charset() or "")
+
+
+def _attachment_data(part: Message) -> tuple[bytes, str, str]:
+    """(data, maintype, subtype) of an attachment part."""
+    if part.get_content_type() == "message/rfc822":
+        inner = part.get_payload()
+        return (inner[0].as_bytes() if inner else b""), "message", "rfc822"
+    payload = part.get_payload(decode=True)
+    maintype, _, subtype = part.get_content_type().partition("/")
+    if maintype == "multipart" or not subtype:
+        maintype, subtype = "application", "octet-stream"
+    return (payload if isinstance(payload, bytes) else b""), maintype, subtype
+
+
+def forwarded_content(raw: bytes) -> tuple[str, list[Message]]:
+    """The readable text and the attachment parts of a raw message. Nothing in it is run or fetched."""
+    original = email.message_from_bytes(raw, policy=email.policy.compat32)
+    plain = html = ""
+    attached: list[Message] = []
+    for part in original.walk():
+        if part.is_multipart():
+            continue
+        kind = part.get_content_type()
+        if part.get_content_disposition() == "attachment" or kind == "message/rfc822" or kind not in ("text/plain", "text/html") \
+                or part.get_filename():
+            attached.append(part)
+        elif kind == "text/plain" and not plain:
+            plain = _text_of(part)
+        elif kind == "text/html" and not html:
+            html = _text_of(part)
+    return mime.choose_body(plain, mime.html_to_text(html) if html else ""), attached
+
+
+def build_forward(sender: str, to: list[str], reply_to: list[str], origin: dict[str, str], text: str,
+                  parts: list[Message], note: str = "", attachment_limit: int = MAX_FORWARD_ATTACHMENTS,
+                  omitted_names: list[str] | None = None) -> tuple[EmailMessage, list[str]]:
+    """A new message from `sender` that holds a forwarded one. Returns it and the names of the attachments left out.
+
+    `origin` has account (the address of the original's account), sender, date and subject, as the index holds them.
+    The first lines are what a phone notification shows, so they say what the message is and who wrote it.
+    """
+    omitted = list(omitted_names or [])
+    kept: list[tuple[bytes, str, str, str]] = []
+    total = 0
+    for index, part in enumerate(parts, start=1):
+        data, maintype, subtype = _attachment_data(part)
+        name = _line(part.get_filename() or "") or f"attachment-{index}"
+        name = name.replace("/", "_").replace("\\", "_")
+        if total + len(data) > attachment_limit:
+            omitted.append(f"{name} ({len(data) // 1024} KiB)")
+            continue
+        total += len(data)
+        kept.append((data, maintype, subtype, name))
+    lines = [f"Forwarded from {_line(origin['account'])}",
+             f"From: {_line(origin['sender'])}", f"Date: {_line(origin['date'])}", f"Subject: {_line(origin['subject'])}"]
+    if note:
+        lines.append(f"Note: {_line(note)[:MAX_NOTE]}")
+    if kept:
+        lines.append(f"Attachments: {', '.join(item[3] for item in kept)}")
+    if omitted:
+        lines.append(f"Not forwarded, too large or not available ({len(omitted)}): {', '.join(omitted)}")
+    body = text.strip() or "(the message has no text)"
+    if len(body) > MAX_BODY_CHARS:
+        body = body[:MAX_BODY_CHARS] + "\n[the text was cut here]"
+    message = EmailMessage()
+    message["From"] = sender
+    message["To"] = ", ".join(to)
+    if reply_to:
+        message["Reply-To"] = ", ".join(reply_to)
+    message["Subject"] = forward_subject(origin["subject"])
+    message["Date"] = formatdate(localtime=True)
+    message["Message-ID"] = make_msgid(domain=sender.rpartition("@")[2])
+    message.set_content("\n".join(lines) + "\n\n" + body + "\n")
+    for data, maintype, subtype, name in kept:
+        message.add_attachment(data, maintype=maintype, subtype=subtype, filename=name)
+    return message, omitted
+
+
+class ForwardLedger:
+    """Which mail was forwarded to whom, so that one mail never goes to the same address twice.
+
+    One JSON line for each forwarded pair, in a file of the state directory. It holds IDs and addresses, no text.
+    """
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.lock = threading.Lock()
+
+    def done(self, mail_id: str) -> set[str]:
+        """The lower-case addresses that this mail was forwarded to."""
+        found: set[str] = set()
+        try:
+            lines = self.path.read_text().splitlines()
+        except FileNotFoundError:
+            return found
+        for line in lines:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(entry, dict) and entry.get("mail_id") == mail_id:
+                found.add(str(entry.get("to", "")).lower())
+        return found
+
+    def record(self, mail_id: str, addresses: list[str], account: str, message_id: str) -> None:
+        self.path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(descriptor, "a") as handle:
+            for address in addresses:
+                handle.write(json.dumps({"mail_id": mail_id, "to": address, "account": account, "message_id": message_id,
+                                         "at": stamp}) + "\n")
 
 
 def _xoauth2(user: str, token: str) -> Callable[..., str]:

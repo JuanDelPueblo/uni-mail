@@ -122,6 +122,15 @@ class Client:
             payload["reply_to"] = reply_to
         return self.request(payload, timeout=180)
 
+    def forward(self, mail_id: str, account: str, to: List[str], note: str = "", force: bool = False) -> Dict[str, Any]:
+        """Forward an indexed message as a new message sent from an account."""
+        payload: Dict[str, Any] = {"op": "forward", "id": mail_id, "account": account, "to": list(to)}
+        if note:
+            payload["note"] = note
+        if force:
+            payload["force"] = True
+        return self.request(payload, timeout=180)
+
     def send_check(self, account: str) -> Dict[str, Any]:
         return self.request({"op": "send_check", "account": account}, timeout=120)
 

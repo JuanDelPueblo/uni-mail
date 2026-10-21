@@ -72,6 +72,22 @@ def parser() -> argparse.ArgumentParser:
     archive = sub.add_parser("archive", help="move mail to the account's archive folder")
     archive.add_argument("mail_ids", nargs="+")
 
+    send = sub.add_parser("send", help="send a message from an account (SMTP with the account's OAuth sign-in)")
+    send.add_argument("--account", required=True)
+    send.add_argument("--to", action="append", default=[], metavar="ADDRESS", help="a recipient; repeat the option for more")
+    send.add_argument("--cc", action="append", default=[], metavar="ADDRESS")
+    send.add_argument("--bcc", action="append", default=[], metavar="ADDRESS")
+    send.add_argument("--subject", default="", help="required, except for a reply (default: Re: and the original subject)")
+    text = send.add_mutually_exclusive_group(required=True)
+    text.add_argument("--body", help="the message text")
+    text.add_argument("--body-file", metavar="PATH", help="read the message text from a file, or from stdin with -")
+    send.add_argument("--html", action="store_true", help="the body is HTML; a plain text part is made from it")
+    send.add_argument("--reply-to-message", metavar="MAIL_ID", default="",
+                      help="reply to an indexed message: sets In-Reply-To and References, and --to defaults to its sender")
+
+    check = sub.add_parser("send-check", help="sign in to the SMTP server of an account without sending anything")
+    check.add_argument("account")
+
     events = sub.add_parser("events", help="show the daemon's event log")
     events.add_argument("--after", type=int, default=0, help="only the events after this sequence number")
     events.add_argument("--limit", type=int, default=100)
@@ -81,6 +97,8 @@ def parser() -> argparse.ArgumentParser:
     login = auth_sub.add_parser("login", help="sign in with a browser")
     login.add_argument("account")
     login.add_argument("--redirect", help="the redirect URL; without it, the command asks for it")
+    login.add_argument("--send", action="store_true",
+                       help="also ask for permission to send mail (needed once for Microsoft accounts; keeps the existing scopes)")
 
     account = sub.add_parser("account", help="change the accounts of the running daemon (kept in its settings.json)")
     account_sub = account.add_subparsers(dest="account_command", required=True)
@@ -132,8 +150,8 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
-def login(client: Client, account: str, redirect: str | None) -> dict[str, Any]:
-    begin = client.auth_begin(account)
+def login(client: Client, account: str, redirect: str | None, send: bool = False) -> dict[str, Any]:
+    begin = client.auth_begin(account, send)
     if redirect is None:
         print("Open this URL in a browser and sign in:\n", file=sys.stderr)
         print(begin["url"], file=sys.stderr)
@@ -145,6 +163,12 @@ def login(client: Client, account: str, redirect: str | None) -> dict[str, Any]:
         )
         redirect = input("Redirect URL: ")
     return client.auth_finish(account, redirect)
+
+
+def _body(args: argparse.Namespace) -> str:
+    if args.body is not None:
+        return args.body
+    return sys.stdin.read() if args.body_file == "-" else Path(args.body_file).read_text()
 
 
 def _load_config(path: str) -> tuple[Any, Any]:
@@ -273,10 +297,15 @@ def run(args: argparse.Namespace) -> Any:
         return client.mark(args.mail_ids, command == "mark-read")
     if command == "archive":
         return client.archive(args.mail_ids)
+    if command == "send":
+        return client.send(args.account, args.to, args.subject, _body(args), args.cc,
+                           args.bcc, args.html, args.reply_to_message)
+    if command == "send-check":
+        return client.send_check(args.account)
     if command == "events":
         return client.events(after=args.after, limit=args.limit)
     if command == "auth":
-        return login(client, args.account, args.redirect)
+        return login(client, args.account, args.redirect, args.send)
     if command == "account":
         sub = args.account_command
         if sub == "list":

@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import auth, config, events, mime, settings
+from . import auth, config, events, mime, send, settings
 from .account import MailAccount, MailError, attachment_part, attachments, default_imap_factory
 from .imapproto import Part, attachment_parts
 from .store import Store
@@ -64,9 +64,11 @@ def parse_time(value: str) -> str:
 
 
 class Service:
-    def __init__(self, cfg: config.Config, imap_factory: Callable = default_imap_factory):
+    def __init__(self, cfg: config.Config, imap_factory: Callable = default_imap_factory,
+                 smtp_factory: Callable = send.default_smtp_factory):
         self.cfg = cfg
         self.imap_factory = imap_factory
+        self.smtp_factory = smtp_factory
         self.store = Store(cfg.state_dir)
         self.tokens = auth.TokenStore(cfg.state_dir / "tokens")
         self.logins = auth.LoginFlow(self.tokens)
@@ -341,7 +343,11 @@ class Service:
         account = self._account(str(request.get("account") or ""))
         if not account.session:
             raise RequestError(f"account {account.name} uses a password, not OAuth")
-        return self.logins.begin(account.name, account.provider, account.cfg.address)
+        want_send = bool(request.get("send"))
+        if want_send and not account.provider.send_scope:
+            raise RequestError(f"account {account.name}: the {account.cfg.provider} sign-in scope already allows sending; "
+                               "no extra consent is needed")
+        return self.logins.begin(account.name, account.provider, account.cfg.address, want_send)
 
     def op_auth_finish(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
@@ -351,6 +357,62 @@ class Service:
         account.session.forget()
         account.wake()
         return {"account": account.name, "message": "signed in; the account starts to sync in a few seconds"}
+
+    # Sending
+
+    def _sender(self, name: str) -> MailAccount:
+        account = self._account(name)
+        if not account.session or not account.provider.smtp_host:
+            raise RequestError(f"account {account.name} cannot send mail: sending supports OAuth accounts of the "
+                               "google and microsoft providers")
+        return account
+
+    def op_send_check(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Sign in to the SMTP server of an account and leave again. Sends nothing."""
+        account = self._sender(str(request.get("account") or ""))
+        send.check(account.cfg.address, account.provider, account.session, self.smtp_factory)
+        return {"account": account.name, "address": account.cfg.address, "can_send": True,
+                "smtp": f"{account.provider.smtp_host}:{account.provider.smtp_port}"}
+
+    def op_send(self, request: dict[str, Any]) -> dict[str, Any]:
+        account = self._sender(str(request.get("account") or ""))
+        to = send.parse_addresses(request.get("to"), "to")
+        cc = send.parse_addresses(request.get("cc"), "cc")
+        bcc = send.parse_addresses(request.get("bcc"), "bcc")
+        subject = send.single_line(request.get("subject") or "", "subject", send.MAX_SUBJECT)
+        body = request.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise RequestError("body must be non-empty text")
+        if len(body) > send.MAX_BODY_CHARS:
+            raise RequestError(f"body is longer than {send.MAX_BODY_CHARS} characters")
+        reference = ""
+        if request.get("reply_to"):
+            record = self._record(request["reply_to"])
+            if record["account"] != account.name:
+                raise RequestError(f"message {record['id']} belongs to account {record['account']}; reply from that account")
+            reference = record["message_id"]
+            subject = subject or send.reply_subject(record["subject"])
+            if not to and not cc:
+                to = send.parse_addresses(record["sender"], "the sender of the original")
+        if not to:
+            raise RequestError("to must name at least one recipient")
+        if not subject:
+            raise RequestError("subject must not be empty")
+        envelope = list(dict.fromkeys(address for address in (*to, *cc, *bcc)))
+        if len(envelope) > send.MAX_RECIPIENTS:
+            raise RequestError(f"at most {send.MAX_RECIPIENTS} recipients")
+        message = send.build_message(account.cfg.address, to, cc, subject, body, bool(request.get("html")), reference)
+        refused = send.deliver(account.cfg.address, account.provider, account.session, message, envelope, self.smtp_factory)
+        message_id = str(message["Message-ID"])
+        # The body is never logged.
+        log.info("sent mail: account=%s message_id=%s to=%s cc=%s bcc=%s subject=%r", account.name, message_id, to, cc, bcc,
+                 subject[:200])
+        result: dict[str, Any] = {"account": account.name, "from": account.cfg.address, "message_id": message_id,
+                                  "to": to, "cc": cc, "bcc": len(bcc), "subject": subject}
+        if refused:
+            result["refused"] = refused
+            log.warning("sent mail %s: the server refused %s", message_id, sorted(refused))
+        return result
 
     def _settings(self) -> settings.Settings:
         if self.settings is None:
@@ -407,7 +469,7 @@ class Service:
             return {"ok": False, "error": f"unknown operation {request.get('op')!r}"}
         try:
             result = operation(request)
-        except (RequestError, MailError, auth.AuthError, auth.TransientAuthError, config.ConfigError) as error:
+        except (RequestError, MailError, send.SendError, auth.AuthError, auth.TransientAuthError, config.ConfigError) as error:
             return {"ok": False, "error": str(error)}
         except (KeyError, TypeError, ValueError) as error:
             return {"ok": False, "error": f"bad request: {error}"}

@@ -38,6 +38,11 @@ class Provider:
     # protect anything and is not a credential of this project.
     client_secret: str | None = None
     extra_auth_params: dict[str, str] = field(default_factory=dict)
+    # Sending mail: SMTP with XOAUTH2. An empty send_scope means that the
+    # sign-in scope already allows sending (Google's full mail scope).
+    smtp_host: str = ""
+    smtp_port: int = 587
+    send_scope: str = ""
 
 
 # The built-in Thunderbird OAuth issuers from
@@ -52,6 +57,8 @@ PROVIDERS: dict[str, Provider] = {
         client_id="9e5f94bc-e8a4-4e73-b8be-63364c29d753",
         redirect_uri="https://localhost",
         scope="https://outlook.office.com/IMAP.AccessAsUser.All offline_access",
+        smtp_host="smtp.office365.com",
+        send_scope="https://outlook.office.com/SMTP.Send",
     ),
     "google": Provider(
         host="imap.gmail.com",
@@ -63,6 +70,7 @@ PROVIDERS: dict[str, Provider] = {
         redirect_uri="http://localhost",
         scope="https://mail.google.com/",
         extra_auth_params={"access_type": "offline", "prompt": "consent"},
+        smtp_host="smtp.gmail.com",
     ),
 }
 
@@ -140,12 +148,16 @@ def pkce_pair() -> tuple[str, str]:
     return verifier, challenge
 
 
-def authorization_url(provider: Provider, user: str, state: str, challenge: str) -> str:
+def authorization_url(provider: Provider, user: str, state: str, challenge: str, send: bool = False) -> str:
+    scope = provider.scope
+    if send and provider.send_scope:
+        # Keep the existing scopes and add the one for sending.
+        scope = f"{provider.send_scope} {scope}"
     params = {
         "response_type": "code",
         "client_id": provider.client_id,
         "redirect_uri": provider.redirect_uri,
-        "scope": provider.scope,
+        "scope": scope,
         "state": state,
         "login_hint": user,
         "code_challenge": challenge,
@@ -227,26 +239,34 @@ class OAuthSession:
         self.provider = provider
         self.store = store
         self._lock = threading.Lock()
-        self._access: str = ""
-        self._expires: float = 0.0
+        # Access tokens by scope; the empty scope is the sign-in scope (IMAP).
+        self._tokens: dict[str, tuple[str, float]] = {}
 
-    def access_token(self) -> str:
+    def access_token(self, scope: str = "") -> str:
+        """An access token. A non-empty scope asks the token endpoint for exactly that scope."""
         with self._lock:
-            if self._access and time.time() < self._expires - 120:
-                return self._access
+            cached = self._tokens.get(scope)
+            if cached and time.time() < cached[1] - 120:
+                return cached[0]
             saved = self.store.load(self.account)
             if not saved or not saved.get("refresh_token"):
                 raise AuthError("no sign-in; run: uni-mail auth login " + self.account)
-            tokens = token_request(self.provider, {"grant_type": "refresh_token", "refresh_token": saved["refresh_token"]})
+            fields = {"grant_type": "refresh_token", "refresh_token": saved["refresh_token"]}
+            if scope:
+                fields["scope"] = f"{scope} offline_access"
+            tokens = token_request(self.provider, fields)
             if tokens.get("refresh_token") and tokens["refresh_token"] != saved["refresh_token"]:
                 self.store.save(self.account, {**saved, "refresh_token": tokens["refresh_token"], "refreshed": time.time()})
-            self._access = tokens["access_token"]
-            self._expires = time.time() + int(tokens.get("expires_in", 3600))
-            return self._access
+            self._tokens[scope] = (tokens["access_token"], time.time() + int(tokens.get("expires_in", 3600)))
+            return tokens["access_token"]
+
+    def send_token(self) -> str:
+        """An access token that allows sending through SMTP. Raises AuthError when the sign-in lacks the scope."""
+        return self.access_token(self.provider.send_scope)
 
     def forget(self) -> None:
         with self._lock:
-            self._access, self._expires = "", 0.0
+            self._tokens.clear()
 
 
 @dataclass
@@ -255,6 +275,7 @@ class PendingLogin:
     state: str
     verifier: str
     created: float
+    send: bool = False
 
 
 class LoginFlow:
@@ -265,15 +286,15 @@ class LoginFlow:
         self._pending: dict[str, PendingLogin] = {}
         self._lock = threading.Lock()
 
-    def begin(self, account: str, provider: Provider, user: str) -> dict[str, str]:
+    def begin(self, account: str, provider: Provider, user: str, send: bool = False) -> dict[str, str]:
         state = secrets.token_urlsafe(16)
         verifier, challenge = pkce_pair()
         with self._lock:
             now = time.time()
             self._pending = {key: value for key, value in self._pending.items() if now - value.created < LOGIN_TIMEOUT}
-            self._pending[account] = PendingLogin(account, state, verifier, now)
+            self._pending[account] = PendingLogin(account, state, verifier, now, send)
         return {
-            "url": authorization_url(provider, user, state, challenge),
+            "url": authorization_url(provider, user, state, challenge, send),
             "redirect_uri": provider.redirect_uri,
         }
 

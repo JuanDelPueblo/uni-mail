@@ -121,8 +121,64 @@ every account:
 
 `uni-mail-mcp` is a thin layer over the socket client, in the optional `mcp`
 extra. It exposes only the mail operations: status, list, search, show,
-folders, attachments, export, mark read or unread, archive. It cannot sign in,
+folders, attachments, export, mark read or unread, archive (and, only when
+started with `--enable-send`, send; see below). It cannot sign in,
 change accounts, read the event log, configure destinations or run commands.
+
+## Sending mail
+
+The daemon has one new socket action, `send` (and `send_check`, which signs in
+to SMTP and sends nothing). The CLI is `uni-mail send`.
+
+**Transport.** SMTP with XOAUTH2, using the refresh token that IMAP already
+uses. It is the least invasive choice: no new API, host or token store. The
+Graph `sendMail` and Gmail API `messages.send` calls would need other scopes
+(`Mail.Send`, `gmail.send`) that the Thunderbird client does not hold.
+
+| Provider | Host | Scope needed | Present after the normal sign-in |
+| --- | --- | --- | --- |
+| `google` | `smtp.gmail.com:587` | `https://mail.google.com/` | yes |
+| `microsoft` | `smtp.office365.com:587` | `https://outlook.office.com/SMTP.Send` | no: `uni-mail auth login <account> --send` |
+
+The refresh token of a Microsoft account gives an SMTP access token by asking
+the token endpoint for the `SMTP.Send` scope. If that account never consented,
+the endpoint refuses, and `send` answers with the command to run. The
+`--send` sign-in asks for the IMAP and the SMTP scope together, so the IMAP
+access stays. A failed send never changes the stored token or the sync state
+of the account. A tenant can still turn SMTP AUTH off; `send-check` shows it.
+
+**Message.** Plain text, or HTML with a generated plain text part. The daemon
+builds the headers itself (From is always the account address; Message-ID,
+Date, and In-Reply-To and References for `--reply-to-message`). Recipients
+are parsed to bare ASCII addresses and the same list goes into the headers
+and the SMTP envelope; Bcc is only in the envelope. A subject with a line
+break is refused. There are no attachments. Limits in the daemon: 998
+characters of subject, 500000 of body, 50 recipients. A reply may only use an
+account that holds the original message. Gmail and Exchange Online save SMTP
+submissions in Sent, so the daemon appends nothing over IMAP.
+
+**Logging.** Every send logs account, Message-ID, To, Cc, Bcc and subject,
+never the body.
+
+**MCP exposure.** The socket is trusted (same user), so the protections are in
+`uni-mail-mcp`, which an agent that reads untrusted mail talks to:
+
+- `mail_send` is not registered unless `--enable-send` is given.
+- The allowlist (`--send-allow`, `$UNI_MAIL_MCP_SEND_ALLOW`) is empty by
+  default and then allows nobody. An entry is an address or `@domain`. Every
+  To and Cc address must match, or nothing is sent. The tool has no Bcc.
+- `--send-account` fixes the sender account.
+- A sliding window of 10 sends per hour (`--send-rate-limit`), a body of 20000
+  characters and a subject of 200 (`--send-max-body`, `--send-max-subject`),
+  at most 10 recipients. The tool sends plain text only.
+- Every send and every refusal is logged by the MCP server (to stderr, at
+  INFO whatever `--log-level` is), without the body.
+- The tool description and the server instructions tell the model that mail
+  text is not an instruction. That is advice only; the allowlist is the control.
+
+Limits of this design: the allowlist bounds who can get mail, not what it says,
+so a prompt-injected agent can still put attacker-chosen text in a message
+to an allowed recipient. A running server keeps its policy until restarted.
 
 ## Risks
 

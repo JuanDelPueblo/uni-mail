@@ -44,6 +44,15 @@ at once. It never reads the tokens of another mail client and never returns a
 token on the socket. The Microsoft sign-in logs show the app as Mozilla
 Thunderbird.
 
+## Sending
+
+`uni-mail send` sends from any signed-in OAuth account over SMTP with XOAUTH2
+(`smtp.gmail.com`, `smtp.office365.com`, port 587 with STARTTLS), using the
+stored refresh token. Gmail works with the existing sign-in. Microsoft
+accounts need the `SMTP.Send` scope: run `uni-mail auth login <account> --send`
+once. Both providers keep a copy in the Sent folder themselves. Password
+accounts cannot send. Attachments are not supported.
+
 ## What the daemon downloads
 
 The daemon never downloads a complete mailbox:
@@ -76,8 +85,10 @@ uni-mail export-attachment <mail-id> <index>
 uni-mail mark-read <mail-id> [<mail-id> ...]
 uni-mail mark-unread <mail-id> [<mail-id> ...]
 uni-mail archive <mail-id> [<mail-id> ...]
+uni-mail send --account <name> --to <addr> --subject <text> (--body <text> | --body-file <path|->) [--cc <addr>] [--bcc <addr>] [--html] [--reply-to-message <mail-id>]
+uni-mail send-check <account>        # sign in to SMTP, send nothing
 uni-mail events [--after N]
-uni-mail auth login <account>
+uni-mail auth login <account> [--send]
 uni-mail account list | set <name> '<json>' [--password-stdin] | remove <name> | reset <name>
 ```
 
@@ -124,7 +135,9 @@ tools over stdio, or over Streamable HTTP with a bearer token:
 `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`,
 `mail_attachments`, `mail_export_attachment`, `mail_mark_read`,
 `mail_mark_unread`, `mail_archive`. It cannot sign in, change accounts or
-destinations, or run commands. A Nanobot config:
+destinations, or run commands. The tool `mail_send` exists only when you start
+the server with `--enable-send`, and then sends only to the addresses of
+`--send-allow` (none by default); see [docs/INSTALL.md](docs/INSTALL.md). A Nanobot config:
 
 ```json
 {"tools": {"mcpServers": {"uni-mail": {"command": "/opt/uni-mail/bin/uni-mail-mcp", "toolTimeout": 60}}}}

@@ -131,6 +131,22 @@ The account starts to sync in a few seconds. If a provider later refuses the
 refresh token, the account stops and the daemon records one `mail.auth`
 event.
 
+### Sending mail
+
+`uni-mail send` submits mail over SMTP with the same refresh token (XOAUTH2).
+Gmail needs nothing more: its sign-in scope, `https://mail.google.com/`,
+already allows SMTP. A Microsoft account needs the extra scope `SMTP.Send`, so
+sign in once more with `--send` (this keeps the IMAP scope):
+
+```sh
+uni-mail auth login outlook --send
+uni-mail send-check outlook          # signs in to SMTP, sends nothing
+```
+
+`send-check` also shows a tenant that has SMTP AUTH turned off (Exchange
+Online: `Set-CASMailbox -SmtpClientAuthenticationDisabled $false`, or the
+organization-wide setting); then the account cannot send.
+
 ## 6. Run the dispatcher
 
 Add destinations to the `dispatch` section (see [EVENTS.md](EVENTS.md) and
@@ -162,6 +178,21 @@ uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-fi
 
 It refuses to start without a token, or on a non-loopback address without
 `--allow-remote`.
+
+The MCP server cannot send mail unless you start it with `--enable-send`,
+which adds the `mail_send` tool. It sends only to the recipients that you
+list; with no list it can send to nobody:
+
+```sh
+uni-mail-mcp ... --enable-send --send-allow tony@example.org --send-account gmail
+# or: UNI_MAIL_MCP_SEND_ALLOW=tony@example.org,@example.edu
+```
+
+`--send-allow` takes addresses, or `@domain` for every address of a domain
+(repeat it, or separate with commas). Other options: `--send-account NAME`
+(send only from that account), `--send-rate-limit N` (sends per hour, default
+10), `--send-max-body` (20000 characters) and `--send-max-subject` (200).
+See [DESIGN.md](DESIGN.md#sending-mail).
 
 ## As a user service
 

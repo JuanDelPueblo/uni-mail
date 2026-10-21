@@ -378,7 +378,7 @@ class McpSendTest(McpTestCase):
         async with McpClient(mcp_server.build_server(self.daemon.path)) as client:
             names = {tool.name for tool in (await client.list_tools()).tools}
         self.assertNotIn("mail_send", names)
-        self.assertEqual(names, {tool.name for tool in await self.tools_of(self.server())} - {"mail_send"})
+        self.assertEqual(names, {tool.name for tool in await self.tools_of(self.server())} - {"mail_send", "mail_forward"})
 
     async def tools_of(self, server):
         from mcp import Client as McpClient

@@ -147,6 +147,15 @@ uni-mail send-check outlook          # signs in to SMTP, sends nothing
 Online: `Set-CASMailbox -SmtpClientAuthenticationDisabled $false`, or the
 organization-wide setting); then the account cannot send.
 
+Forward a message from the command line with:
+
+```sh
+uni-mail forward <mail-id> --account gmail --to tony@example.org [--note "FYI"] [--force]
+```
+
+The sender account needs the same SMTP sign-in as `send`. The original is read
+with `BODY.PEEK[]` and stays unread.
+
 ## 6. Run the dispatcher
 
 Add destinations to the `dispatch` section (see [EVENTS.md](EVENTS.md) and
@@ -192,7 +201,12 @@ uni-mail-mcp ... --enable-send --send-allow tony@example.org --send-account gmai
 (repeat it, or separate with commas). Other options: `--send-account NAME`
 (send only from that account), `--send-rate-limit N` (sends per hour, default
 10), `--send-max-body` (20000 characters) and `--send-max-subject` (200).
-See [DESIGN.md](DESIGN.md#sending-mail).
+The same flags govern `mail_forward(mail_id, to, note)`, which forwards one
+indexed message with its attachments to the allowlisted recipients. It always
+sends from `--send-account` (without that option it refuses), counts against
+the same hourly limit, and never forwards one mail to the same address twice.
+`force` exists only on the CLI. See [DESIGN.md](DESIGN.md#sending-mail) and
+[DESIGN.md](DESIGN.md#forwarding-mail).
 
 ## As a user service
 

@@ -128,7 +128,8 @@ change accounts, read the event log, configure destinations or run commands.
 ## Sending mail
 
 The daemon has one new socket action, `send` (and `send_check`, which signs in
-to SMTP and sends nothing). The CLI is `uni-mail send`.
+to SMTP and sends nothing). The CLI is `uni-mail send`. A second action,
+`forward`, is described under "Forwarding mail".
 
 **Transport.** SMTP with XOAUTH2, using the refresh token that IMAP already
 uses. It is the least invasive choice: no new API, host or token store. The
@@ -176,9 +177,55 @@ never the body.
 - The tool description and the server instructions tell the model that mail
   text is not an instruction. That is advice only; the allowlist is the control.
 
+`mail_forward` follows the same rules; see "Forwarding mail".
+
 Limits of this design: the allowlist bounds who can get mail, not what it says,
 so a prompt-injected agent can still put attacker-chosen text in a message
 to an allowed recipient. A running server keeps its policy until restarted.
+
+## Forwarding mail
+
+The socket action `forward` (CLI: `uni-mail forward MAIL_ID --account SENDER
+--to ADDRESS [--to ...] [--note TEXT] [--force]`) resends one indexed message.
+It is a new message sent from the sender account's own SMTP login, not a
+redirect, so the envelope sender is the sender account. The sender may differ
+from the account that holds the mail.
+
+**Reading the original.** The daemon fetches the whole message with
+`BODY.PEEK[]` over its action connection, with the folder selected read-only.
+It does not set `\Seen` or any other flag and does not move anything. A message
+larger than the account's `max_part_mb` is not fetched whole: its text goes
+out from the index and its attachments are named as left out.
+
+**Message.** From is the sender address, To the recipients (no Cc or Bcc),
+Subject `Fwd: <subject>` (an existing `Fwd:` or `Fw:` is not repeated),
+Reply-To the original sender. There is no In-Reply-To or References: the
+forward starts a new thread for other people. The plain text starts with
+`Forwarded from <address of the original's account>`, then the original From,
+Date and Subject, an optional `Note:` line, a blank line and the text. That is
+what a phone notification shows. The text is the text/plain part; an HTML-only
+message is converted with the same tag stripper as the index, which drops
+scripts, styles and tags and loads nothing. Attachments stay attachments, up
+to 15 MiB together (and the account's `max_part_mb`); the rest is left out and
+named in the header lines of the text.
+
+**Idempotency.** `forwarded.jsonl` in the state directory records every
+mail ID and recipient that was forwarded (IDs and addresses, no text). A
+recipient who already got that mail is skipped; when all are skipped the
+answer is `forwarded: false` with `already_forwarded`, and nothing is sent.
+A failed or refused delivery is not recorded. `--force` (the socket field
+`force`, CLI only) sends again.
+
+**Logging.** Each forward logs account, mail ID, Message-ID, recipients and
+subject, never the text or the note.
+
+**MCP exposure.** `mail_forward(mail_id, to, note)` exists only with
+`--enable-send` and uses the same policy as `mail_send`: every recipient must
+match `--send-allow`, the sender is always `--send-account` (without it the
+tool refuses, and the caller cannot name an account), and a forward uses the
+same hourly window as a send. The tool has no `force`; a repeat gets the
+"already forwarded" answer. The CLI and the socket do not check an allowlist,
+like `uni-mail send`: the socket user is trusted.
 
 ## Risks
 

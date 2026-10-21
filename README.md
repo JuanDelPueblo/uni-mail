@@ -51,7 +51,13 @@ Thunderbird.
 stored refresh token. Gmail works with the existing sign-in. Microsoft
 accounts need the `SMTP.Send` scope: run `uni-mail auth login <account> --send`
 once. Both providers keep a copy in the Sent folder themselves. Password
-accounts cannot send. Attachments are not supported.
+accounts cannot send. `uni-mail send` has no attachments.
+
+`uni-mail forward <mail-id> --account <sender> --to <addr>` forwards one indexed
+message, with its attachments, as a new message from the sender account. The
+original is read with `BODY.PEEK[]`, so it stays unread. Replies go to the
+original sender (Reply-To). The same mail is not forwarded to the same address
+twice unless you add `--force`.
 
 ## What the daemon downloads
 
@@ -86,6 +92,7 @@ uni-mail mark-read <mail-id> [<mail-id> ...]
 uni-mail mark-unread <mail-id> [<mail-id> ...]
 uni-mail archive <mail-id> [<mail-id> ...]
 uni-mail send --account <name> --to <addr> --subject <text> (--body <text> | --body-file <path|->) [--cc <addr>] [--bcc <addr>] [--html] [--reply-to-message <mail-id>]
+uni-mail forward <mail-id> --account <sender> --to <addr> [--to <addr>] [--note <text>] [--force]
 uni-mail send-check <account>        # sign in to SMTP, send nothing
 uni-mail events [--after N]
 uni-mail auth login <account> [--send]
@@ -135,9 +142,10 @@ tools over stdio, or over Streamable HTTP with a bearer token:
 `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`,
 `mail_attachments`, `mail_export_attachment`, `mail_mark_read`,
 `mail_mark_unread`, `mail_archive`. It cannot sign in, change accounts or
-destinations, or run commands. The tool `mail_send` exists only when you start
-the server with `--enable-send`, and then sends only to the addresses of
-`--send-allow` (none by default); see [docs/INSTALL.md](docs/INSTALL.md). A Nanobot config:
+destinations, or run commands. The tools `mail_send` and `mail_forward` exist
+only when you start the server with `--enable-send`, and then send only to the
+addresses of `--send-allow` (none by default); `mail_forward` also needs
+`--send-account`; see [docs/INSTALL.md](docs/INSTALL.md). A Nanobot config:
 
 ```json
 {"tools": {"mcpServers": {"uni-mail": {"command": "/opt/uni-mail/bin/uni-mail-mcp", "toolTimeout": 60}}}}

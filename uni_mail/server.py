@@ -180,7 +180,8 @@ class Service:
     def op_folders(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
         return {"account": account.name, "folders": account.list_folders(),
-                "archive_folder": account.cfg.archive_folder, "synced": list(account.cfg.folders)}
+                "archive_folder": account.cfg.archive_folder, "trash_folder": account.cfg.trash_folder,
+                "synced": list(account.cfg.folders)}
 
     def op_list(self, request: dict[str, Any]) -> dict[str, Any]:
         account = request.get("account") or ""
@@ -280,6 +281,12 @@ class Service:
         return response
 
     def op_archive(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._move(request, "archive")
+
+    def op_trash(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._move(request, "trash")
+
+    def _move(self, request: dict[str, Any], kind: str) -> dict[str, Any]:
         ids = request.get("ids")
         if not isinstance(ids, list) or not ids:
             raise RequestError("ids must be a non-empty list of mail IDs")
@@ -293,7 +300,7 @@ class Service:
                 by_account.setdefault(record["account"], []).append(record)
         for name, records in by_account.items():
             try:
-                results.update(self._account(name).archive(records))
+                results.update(getattr(self._account(name), kind)(records))
             except MailError as error:
                 results.update({record["id"]: {"ok": False, "error": str(error)} for record in records})
         failed = {key: value for key, value in results.items() if not value.get("ok")}

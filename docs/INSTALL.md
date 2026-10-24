@@ -190,7 +190,7 @@ It refuses to start without a token, or on a non-loopback address without
 
 `--account NAME` (repeat it, or separate with commas) limits a server to some
 accounts: every tool refuses the others. `--read-only` leaves out the tools that
-mark, archive or export. Run one server per kind of client, for example a
+mark, archive, trash or export. Run one server per kind of client, for example a
 read-only one for an assistant and one for a triage agent that may archive only
 its accounts:
 

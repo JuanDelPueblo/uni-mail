@@ -71,6 +71,8 @@ def parser() -> argparse.ArgumentParser:
 
     archive = sub.add_parser("archive", help="move mail to the account's archive folder")
     archive.add_argument("mail_ids", nargs="+")
+    trash = sub.add_parser("trash", help="move mail to the account's trash folder (the provider empties it later)")
+    trash.add_argument("mail_ids", nargs="+")
 
     send = sub.add_parser("send", help="send a message from an account (SMTP with the account's OAuth sign-in)")
     send.add_argument("--account", required=True)
@@ -304,6 +306,8 @@ def run(args: argparse.Namespace) -> Any:
         return client.mark(args.mail_ids, command == "mark-read")
     if command == "archive":
         return client.archive(args.mail_ids)
+    if command == "trash":
+        return client.trash(args.mail_ids)
     if command == "send":
         return client.send(args.account, args.to, args.subject, _body(args), args.cc,
                            args.bcc, args.html, args.reply_to_message)

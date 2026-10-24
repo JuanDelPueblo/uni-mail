@@ -1,7 +1,8 @@
 """uni-mail-mcp: an MCP server that exposes uni-maild to AI clients.
 
 It is a thin layer over the socket client. It can read mail, export attachments and
-change the read state or the folder of a message. It cannot sign in to an account, change
+change the read state or the folder of a message (archive, or trash, which the
+provider empties after about 30 days). It cannot sign in to an account, change
 settings, read the event log or run a command, and it never returns a token.
 
 --account limits a server to some accounts (every tool refuses the others), and
@@ -369,9 +370,19 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
         """
         return run(lambda: client().archive(checked(mail_ids)))
 
+    def mail_trash(mail_ids: list[str]) -> dict[str, Any]:
+        """Move messages to the trash folder of their account. Only do this when the user asks, or when your policy says so.
+
+        Gmail and Outlook empty the trash after about 30 days, so until then the message can be recovered.
+        mail_ids: 1 to 100 IDs. If some fail, the error lists the result of each mail.
+        """
+        return run(lambda: client().trash(checked(mail_ids)))
+
     if not read_only:
         server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
                                                 open_world_hint=False))(mail_archive)
+        server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False,
+                                                open_world_hint=False))(mail_trash)
 
     if send is not None:
         @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
@@ -511,7 +522,7 @@ def parser() -> argparse.ArgumentParser:
                         help="serve only this account: every tool refuses the others. Repeat or separate with commas; "
                              "default: all accounts")
     result.add_argument("--read-only", action="store_true",
-                        help="leave out the tools that mark, archive or export (mail_send and mail_forward stay with --enable-send)")
+                        help="leave out the tools that mark, archive, trash or export (mail_send and mail_forward stay with --enable-send)")
     result.add_argument("--enable-send", action="store_true",
                         help="add the mail_send tool (off by default). It sends only to --send-allow recipients; with none, to nobody")
     result.add_argument("--send-allow", action="append", default=[], metavar="ADDRESS",

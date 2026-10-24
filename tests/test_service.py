@@ -306,6 +306,25 @@ class ServiceTest(unittest.TestCase):
         self.assertNotIn(2, {m.uid for m in self.box.messages})
         self.assertIn(2, {m.uid for m in self.box.folders["Archive"]})
 
+    def test_trash_moves_the_message_to_the_trash_folder(self):
+        service = self.start(trash_folder="Trash")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        before = len(self.box.commands)
+        result = self.call(service, op="trash", ids=[homework["id"]])
+        self.assertEqual(result["results"][homework["id"]], {"ok": True, "folder": "Trash"})
+        commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
+        self.assertTrue(any(command.startswith("UID MOVE") for command in commands))
+        self.assertFalse(any(command.startswith(("UID STORE", "UID EXPUNGE", "CLOSE", "EXPUNGE")) for command in commands))
+        self.assertIsNone(service.store.get(homework["id"]))
+        self.assertIn(2, {m.uid for m in self.box.folders["Trash"]})
+
+    def test_trash_already_in_the_trash_folder_is_refused(self):
+        service = self.start(trash_folder="INBOX")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        response = service.handle({"op": "trash", "ids": [homework["id"]]})
+        self.assertFalse(response["ok"])
+        self.assertIn("already in the trash folder", response["error"])
+
     def test_archive_falls_back_to_copy_store_expunge_without_move(self):
         self.box.capabilities = "IMAP4rev1 IDLE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
         service = self.start(archive_folder="Archive")

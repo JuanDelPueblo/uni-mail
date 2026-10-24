@@ -135,7 +135,7 @@ Two options narrow a server, so that each agent can hold only what it needs:
   names hold no dot, so the prefix decides. `mail_forward` refuses mail of
   another account; its sender is still `--send-account`.
 - `--read-only` leaves out `mail_mark_read`, `mail_mark_unread`,
-  `mail_archive` and `mail_export_attachment`. With `--enable-send`,
+  `mail_archive`, `mail_trash` and `mail_export_attachment`. With `--enable-send`,
   `mail_send` and `mail_forward` are still added.
 
 ## Sending mail

@@ -96,6 +96,9 @@ class Client:
     def archive(self, mail_ids: List[str]) -> Dict[str, Any]:
         return self.request({"op": "archive", "ids": list(mail_ids)})
 
+    def trash(self, mail_ids: List[str]) -> Dict[str, Any]:
+        return self.request({"op": "trash", "ids": list(mail_ids)})
+
     def events(self, after: int = 0, timeout: float = 0, limit: int = 100) -> Dict[str, Any]:
         """The events after the sequence number `after`, and the head of the log."""
         return self.request({"op": "events", "after": after, "timeout": timeout, "limit": limit}, timeout=timeout + 30)

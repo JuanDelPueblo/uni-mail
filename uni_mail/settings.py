@@ -24,7 +24,7 @@ from typing import Any
 from .config import ACCOUNT_NAME, Account, ConfigError, parse_account
 
 EDITABLE = (
-    "provider", "address", "auth", "host", "port", "folders", "archive_folder",
+    "provider", "address", "auth", "host", "port", "folders", "archive_folder", "trash_folder",
     "sync_days", "poll_seconds", "cache_limit_mb", "max_part_mb",
 )
 # A password stays valid only for the same server and user name.
@@ -47,6 +47,7 @@ def form(account: Account) -> dict[str, Any]:
         "port": account.port,
         "folders": list(account.folders),
         "archive_folder": account.archive_folder,
+        "trash_folder": account.trash_folder,
         "sync_days": account.sync_days,
         "poll_seconds": account.poll_seconds,
         "cache_limit_mb": account.cache_limit_mb,

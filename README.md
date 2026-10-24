@@ -141,7 +141,8 @@ Delivery is at least once: deduplicate on `event_id`. See
 tools over stdio, or over Streamable HTTP with a bearer token:
 `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`,
 `mail_attachments`, `mail_export_attachment`, `mail_mark_read`,
-`mail_mark_unread`, `mail_archive`. It cannot sign in, change accounts or
+`mail_mark_unread`, `mail_archive`, `mail_trash` (to the account's trash folder, which the
+provider empties after about 30 days). It cannot sign in, change accounts or
 destinations, or run commands. `--account` limits a server to some accounts and
 `--read-only` leaves out the tools that change mail. The tools `mail_send` and `mail_forward` exist
 only when you start the server with `--enable-send`, and then send only to the

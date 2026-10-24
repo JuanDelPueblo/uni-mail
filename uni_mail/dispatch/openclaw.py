@@ -1,12 +1,16 @@
-"""OpenClaw destinations: one agent turn per event, in one shared conversation.
+"""OpenClaw destinations: one agent turn per event.
 
     POST <url>                      (OpenClaw's POST /hooks/agent)
     Authorization: Bearer <token>
     Idempotency-Key: <delivery ID, the same for each retry>
 
-    {"message": ..., "name": "uni-mail", "agentId": ..., "sessionKey": ...,
-     "sessionMode": "persistent", "deliver": false, "waitForCompletion": true,
-     "timeoutSeconds": ...}
+    {"message": ..., "name": "uni-mail", "agentId": ..., "sessionMode": "isolated",
+     "deliver": false, "waitForCompletion": true, "timeoutSeconds": ...}
+
+Without a session_key, each event is a fresh conversation (sessionMode
+"isolated"), so no email stays in the context of the next one. With one, every
+event goes to that shared conversation (sessionMode "persistent", with
+"sessionKey"); OpenClaw then needs hooks.allowRequestSessionKey.
 
 The message holds only the account, the mail ID and the event ID; the agent
 reads the mail through uni-mail MCP and applies its own policy. Nothing an
@@ -73,10 +77,11 @@ class OpenClawSink(WebhookSink):
             return Result("dead", error=f"refused: {error}")
         except OSError as error:
             return Result("retry", error=str(error))
+        session = {"sessionKey": destination.session_key, "sessionMode": "persistent"} if destination.session_key \
+            else {"sessionMode": "isolated"}
         payload = json.dumps({
-            "message": instruction(event), "name": "uni-mail", "agentId": destination.agent_id,
-            "sessionKey": destination.session_key, "sessionMode": "persistent", "deliver": False,
-            "waitForCompletion": True, "timeoutSeconds": max(1, int(destination.timeout_seconds - MARGIN)),
+            "message": instruction(event), "name": "uni-mail", "agentId": destination.agent_id, **session,
+            "deliver": False, "waitForCompletion": True, "timeoutSeconds": max(1, int(destination.timeout_seconds - MARGIN)),
         }, sort_keys=True).encode()
         headers = {
             "Content-Type": "application/json",

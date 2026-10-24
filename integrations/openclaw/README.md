@@ -2,9 +2,11 @@
 
 uni-mail delivers each new email to [OpenClaw](https://docs.openclaw.ai/) with
 a native `openclaw` dispatch destination: no trigger script in between. Every
-matching email becomes one turn in the **same** persistent conversation
-(`agentId` + `sessionKey`), and the agent reads the mail through the uni-mail
-MCP server.
+matching email becomes one agent turn, and the agent reads the mail through the
+uni-mail MCP server. By default each turn is a fresh conversation
+(`sessionMode: "isolated"`), so no email stays in the context of the next one.
+With a `session_key`, every email is a turn in that **same** persistent
+conversation instead.
 
 uni-mail decides nothing. What is essential and whether to mark mail as read
 belongs to the agent's policy (its instructions in OpenClaw). The request
@@ -23,16 +25,15 @@ Checked against the OpenClaw docs (`automation/cron-jobs/webhooks`,
     "enabled": true,
     "path": "/hooks",
     "token": "<long random value, only for hooks>",
-    "allowedAgentIds": ["university-mail"],
-    "allowRequestSessionKey": true,
-    "allowedSessionKeyPrefixes": ["hook:university-mail"]
+    "allowedAgentIds": ["mail-triage"]
   }
 }
 ```
 
-A persistent session needs `allowRequestSessionKey: true` and a non-empty
-`allowedSessionKeyPrefixes`. Use a token dedicated to hooks, not the gateway
-token. The agent `university-mail` must exist and carry your triage policy.
+Use a token dedicated to hooks, not the gateway token. The agent `mail-triage`
+must exist and carry your triage policy. A destination with a `session_key`
+(a persistent conversation) also needs `allowRequestSessionKey: true` and a
+non-empty `allowedSessionKeyPrefixes` that matches the key.
 
 ## 2. OpenClaw: the uni-mail MCP connection
 
@@ -40,8 +41,13 @@ Run uni-mail's own Streamable HTTP server (nothing else to install):
 
 ```sh
 openssl rand -hex 32 > ~/.config/uni-mail/secrets/mcp-token && chmod 0600 ~/.config/uni-mail/secrets/mcp-token
-uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-file ~/.config/uni-mail/secrets/mcp-token
+uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-file ~/.config/uni-mail/secrets/mcp-token \
+  --account university
 ```
+
+`--account` (repeat it for more) keeps the triage agent to the accounts it
+triages: it cannot read or archive mail of the others. Give other agents a
+server of their own, `--read-only` if they only need to read.
 
 and point OpenClaw at it (`MCP_TOKEN` set in the gateway's environment):
 
@@ -75,8 +81,7 @@ chmod 0600 ~/.config/uni-mail/secrets/openclaw
       "type": "openclaw",
       "url": "http://127.0.0.1:18789/hooks/agent",
       "secret_file": "/home/you/.config/uni-mail/secrets/openclaw",
-      "agent_id": "university-mail",
-      "session_key": "hook:university-mail",
+      "agent_id": "mail-triage",
       "accounts": ["university"],
       "events": ["mail.new"],
       "allow_private_network": true,
@@ -97,9 +102,12 @@ restart of `uni-mail-dispatch`.
 <delivery ID>` (the same for every retry) and
 
 ```json
-{"message": "...", "name": "uni-mail", "agentId": "university-mail", "sessionKey": "hook:university-mail",
- "sessionMode": "persistent", "deliver": false, "waitForCompletion": true, "timeoutSeconds": 885}
+{"message": "...", "name": "uni-mail", "agentId": "mail-triage", "sessionMode": "isolated",
+ "deliver": false, "waitForCompletion": true, "timeoutSeconds": 885}
 ```
+
+With a `session_key`, `"sessionMode": "persistent"` and `"sessionKey": "<key>"`
+replace `"sessionMode": "isolated"`.
 
 `timeoutSeconds` is `timeout_seconds` minus 15, so the agent turn ends before
 the request gives up. `deliver: false` keeps OpenClaw from announcing anywhere;
@@ -126,5 +134,6 @@ run is unsettled and for 5 minutes after, and forgets it on a restart; a
 dispatcher crash between the answer and the stored result sends the delivery
 again later with the same key. Make the agent's policy safe to repeat (reading,
 classifying and marking read are), and let it skip an event ID it has seen.
-All emails share one conversation, which OpenClaw serializes: a long turn
-delays the next ones, and `timeout_seconds` should cover the queue wait.
+With a `session_key`, all emails share one conversation, which OpenClaw
+serializes: a long turn delays the next ones, and `timeout_seconds` should cover
+the queue wait.

@@ -87,10 +87,11 @@ each attempt, so a rotation needs no restart) or `secret_env` (a variable in
 the dispatcher's environment), `allow_private_network` (default `false`),
 `allow_http` (default `false`).
 
-OpenClaw keys: the webhook keys, plus `agent_id` and `session_key` (both
-required). The destination calls OpenClaw's `POST /hooks/agent` with a bearer
-token in one persistent conversation, and only a finished run (`completion.status`
-`ok`) counts as delivered; an ambiguous outcome is dead, not retried. See
+OpenClaw keys: the webhook keys, plus `agent_id` (required) and `session_key`
+(optional). The destination calls OpenClaw's `POST /hooks/agent` with a bearer
+token: each event in a fresh conversation, or, with `session_key`, all in that
+one persistent conversation. Only a finished run (`completion.status` `ok`)
+counts as delivered; an ambiguous outcome is dead, not retried. See
 [integrations/openclaw](../integrations/openclaw/README.md).
 
 The dispatcher reads the config at start. Restart `uni-mail-dispatch` after a

@@ -187,10 +187,11 @@ def parse_destination(name: str, raw: Any, retry: Retry) -> Destination:
     _require(not secret_env or bool(ENV_NAME.fullmatch(secret_env)), f"{what}.secret_env must be a variable name")
     extra: dict[str, Any] = {}
     if kind == "openclaw":
-        for key in ("agent_id", "session_key"):
-            value = raw.get(key)
-            _require(isinstance(value, str) and bool(value.strip()), f"{what}.{key} is required and must be text")
-            extra[key] = value.strip()
+        agent = raw.get("agent_id")
+        _require(isinstance(agent, str) and bool(agent.strip()), f"{what}.agent_id is required and must be text")
+        session = raw.get("session_key", "")
+        _require(isinstance(session, str), f"{what}.session_key must be text")
+        extra = {"agent_id": agent.strip(), "session_key": session.strip()}
     return Destination(**common, url=url, secret_file=secret_file, secret_env=secret_env,
                        allow_private_network=bool(raw.get("allow_private_network", False)), allow_http=allow_http, **extra)
 

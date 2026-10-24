@@ -592,6 +592,13 @@ class OpenClawTest(DispatchCase):
             dispatcher.run_once()
         return dispatcher, self.delivery(dispatcher, "oc")
 
+    def test_without_a_session_key_each_event_is_isolated(self):
+        _, delivery = self.run_openclaw(session_key="")
+        self.assertEqual(delivery["status"], "delivered")
+        sent = json.loads(self.receiver.requests[0]["body"])
+        self.assertEqual(sent["sessionMode"], "isolated")
+        self.assertNotIn("sessionKey", sent)
+
     def test_success_request(self):
         dispatcher, delivery = self.run_openclaw()
         self.assertEqual(delivery["status"], "delivered")
@@ -724,11 +731,15 @@ class OpenClawTest(DispatchCase):
         self.assertEqual(len(self.receiver.requests), 1)
 
     def test_config_rules(self):
-        for key in ("agent_id", "session_key"):
-            raw = self.openclaw()
-            del raw[key]
-            with self.assertRaises(config.ConfigError):
-                dispatch_config.parse({"destinations": {"oc": raw}})
+        raw = self.openclaw()
+        del raw["agent_id"]
+        with self.assertRaises(config.ConfigError):
+            dispatch_config.parse({"destinations": {"oc": raw}})
+        with self.assertRaises(config.ConfigError):
+            dispatch_config.parse({"destinations": {"oc": self.openclaw(session_key=3)}})
+        raw = self.openclaw()
+        del raw["session_key"]
+        self.assertEqual(dispatch_config.parse({"destinations": {"oc": raw}}).destinations["oc"].session_key, "")
         with self.assertRaises(config.ConfigError):
             dispatch_config.parse({"destinations": {"hook": {**self.openclaw(), "type": "webhook"}}})
         self.assertEqual(dispatch_config.parse({"destinations": {"oc": self.openclaw()}}).destinations["oc"].kind, "openclaw")

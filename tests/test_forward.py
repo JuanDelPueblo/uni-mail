@@ -303,10 +303,11 @@ class McpForwardTest(McpTestCase):
         policy.setdefault("account", "gmail")
         return mcp_server.SendPolicy(**policy)
 
-    async def forward(self, arguments, **policy):
+    async def forward(self, arguments, accounts=(), **policy):
         from mcp import Client as McpClient
 
-        async with McpClient(mcp_server.build_server(self.daemon.path, send=self.policy(**policy))) as client:
+        server = mcp_server.build_server(self.daemon.path, send=self.policy(**policy), accounts=accounts)
+        async with McpClient(server) as client:
             return await client.call_tool("mail_forward", arguments)
 
     def forwarded_requests(self):
@@ -340,6 +341,14 @@ class McpForwardTest(McpTestCase):
         self.assertFalse(result.is_error, self.text(result))
         (request,) = self.forwarded_requests()
         self.assertEqual(request, {"op": "forward", "id": "university.1", "account": "gmail", "to": ["tony@example.org"], "note": "FYI"})
+
+    async def test_a_scoped_server_forwards_only_its_accounts_mail(self):
+        result = await self.forward({"mail_id": "outlook.1", "to": ["tony@example.org"]}, accounts=("university",))
+        self.assertTrue(result.is_error)
+        self.assertEqual(self.forwarded_requests(), [])
+        result = await self.forward({"mail_id": "university.1", "to": ["tony@example.org"]}, accounts=("university",))
+        self.assertFalse(result.is_error, self.text(result))
+        self.assertEqual(self.forwarded_requests()[0]["account"], "gmail")
 
     async def test_force_and_account_cannot_be_passed(self):
         result = await self.forward({"mail_id": "university.1", "to": ["tony@example.org"], "force": True, "account": "other"})

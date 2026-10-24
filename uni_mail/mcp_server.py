@@ -4,6 +4,10 @@ It is a thin layer over the socket client. It can read mail, export attachments 
 change the read state or the folder of a message. It cannot sign in to an account, change
 settings, read the event log or run a command, and it never returns a token.
 
+--account limits a server to some accounts (every tool refuses the others), and
+--read-only leaves out the tools that change mail or write files, so that one agent
+can hold a server that sees only its accounts and another one that can only read.
+
 It needs the optional `mcp` package (version 2): pip install 'uni-mail[mcp]'
 """
 
@@ -187,10 +191,18 @@ class SendPolicy:
             self._sent.append(now)
 
 
-def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy | None = None) -> Any:
+def _account_of(mail_id: str) -> str:
+    """The account of a mail ID: the part before the first dot (`university.3f2a9c1d0b7e4a55`)."""
+    return mail_id.strip().partition(".")[0]
+
+
+def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy | None = None,
+                 accounts: tuple[str, ...] = (), read_only: bool = False) -> Any:
     """The MCP server with the mail tools. Each tool opens its own connection to the daemon.
 
-    The tool mail_send exists only when `send` is given (uni-mail-mcp --enable-send)."""
+    The tool mail_send exists only when `send` is given (uni-mail-mcp --enable-send). With
+    `accounts`, every tool serves only those accounts. With `read_only`, the tools that mark,
+    archive or export are left out."""
     try:
         from mcp.server.mcpserver import MCPServer
         from mcp.server.mcpserver.exceptions import ToolError
@@ -212,19 +224,49 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
         except ValueError as error:
             raise ToolError(str(error)) from None
 
+    scope = tuple(dict.fromkeys(accounts))
+
+    def check_account(account: str) -> None:
+        if scope and account not in scope:
+            raise ValueError(f"this server serves only the account(s) {', '.join(scope)}, not {account!r}")
+
+    def check_mail(*mail_ids: str) -> None:
+        for mail_id in mail_ids:
+            if scope and _account_of(mail_id) not in scope:
+                raise ValueError(f"{mail_id.strip()!r} is not mail of the account(s) {', '.join(scope)} that this server serves")
+
+    def mutate(call: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
+        """`call` registered as a tool only when the server may change mail."""
+        return call if read_only else server.tool(annotations=writes)(call)
+
     reads = ToolAnnotations(read_only_hint=True, open_world_hint=False)
     writes = ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 
     @server.tool(annotations=reads)
     def mail_status() -> dict[str, Any]:
         """Show the mail accounts: sign-in state, last sync, the synced folders and the number of messages."""
-        return run(lambda: client().status())
+        def call() -> dict[str, Any]:
+            status = client().status()
+            if scope:
+                status["accounts"] = [item for item in status.get("accounts", []) if item.get("name") in scope]
+            return status
+        return run(call)
 
     def listing(query: str, account: str, since: str, until: str, unread: bool, limit: int) -> dict[str, Any]:
         def call() -> dict[str, Any]:
             if not 1 <= limit <= MAX_LIMIT:
                 raise ValueError(f"limit must be from 1 to {MAX_LIMIT}")
-            return client().list(query=query, account=account, since=since, until=until, unread=unread, limit=limit)
+            if account or len(scope) == 1:
+                check_account(account or scope[0])
+                return client().list(query=query, account=account or scope[0], since=since, until=until, unread=unread,
+                                     limit=limit)
+            if not scope:
+                return client().list(query=query, account="", since=since, until=until, unread=unread, limit=limit)
+            # Several accounts: the newest `limit` of their lists, in the daemon's order (date, newest first).
+            messages = [message for name in scope for message in client().list(
+                query=query, account=name, since=since, until=until, unread=unread, limit=limit).get("messages", [])]
+            messages.sort(key=lambda message: message.get("date") or "", reverse=True)
+            return {"ok": True, "count": len(messages[:limit]), "messages": messages[:limit]}
         return run(call)
 
     @server.tool(annotations=reads)
@@ -232,7 +274,7 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
                   limit: int = 50) -> dict[str, Any]:
         """List recent mail, newest first, without the text. Reads never change the read state of a message.
 
-        account: an account name; empty means all accounts.
+        account: an account name; empty means all accounts this server serves.
         since, until: 2d, 12h, yesterday or an ISO date such as 2026-09-01.
         unread: only unread mail.
         limit: 1 to 500 messages.
@@ -246,7 +288,7 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
         """Search the sender, the subject and the preview of recent mail. Reads never change the read state.
 
         query: the text to look for.
-        account: an account name; empty means all accounts.
+        account: an account name; empty means all accounts this server serves.
         since, until: 2d, 12h, yesterday or an ISO date such as 2026-09-01.
         unread: only unread mail.
         limit: 1 to 500 messages.
@@ -267,52 +309,69 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
         def call() -> dict[str, Any]:
             if not 1 <= max_chars <= MAX_BODY_CHARS:
                 raise ValueError(f"max_chars must be from 1 to {MAX_BODY_CHARS}")
+            check_mail(mail_id)
             return _truncate(client().show(mail_id, full=full), max_chars)
         return run(call)
 
     @server.tool(annotations=reads)
     def mail_folders(account: str) -> dict[str, Any]:
         """List the folders of an account on the mail server, with the archive folder and the synced folders."""
-        return run(lambda: client().folders(account))
+        def call() -> dict[str, Any]:
+            check_account(account)
+            return client().folders(account)
+        return run(call)
 
     @server.tool(annotations=reads)
     def mail_attachments(mail_id: str) -> dict[str, Any]:
         """List the attachments of one message: index, file name, type and size."""
-        return run(lambda: client().attachments(mail_id))
+        def call() -> dict[str, Any]:
+            check_mail(mail_id)
+            return client().attachments(mail_id)
+        return run(call)
 
-    @server.tool(annotations=writes)
+    @mutate
     def mail_export_attachment(mail_id: str, index: int) -> dict[str, Any]:
         """Save one attachment in the export cache of the service and return its path, name, type and size.
 
         index: the attachment index from mail_attachments or mail_show.
         It writes only into the cache of the service. It does not change the mail on the server.
         """
-        return run(lambda: client().export_attachment(mail_id, index))
+        def call() -> dict[str, Any]:
+            check_mail(mail_id)
+            return client().export_attachment(mail_id, index)
+        return run(call)
 
-    @server.tool(annotations=writes)
+    def checked(mail_ids: list[str]) -> list[str]:
+        ids = _check_ids(mail_ids)
+        check_mail(*ids)
+        return ids
+
+    @mutate
     def mail_mark_read(mail_ids: list[str]) -> dict[str, Any]:
         """Mark messages as read on the mail server. Only do this when the user asks.
 
         mail_ids: 1 to 100 IDs. If some fail, the error lists the result of each mail.
         """
-        return run(lambda: client().mark(_check_ids(mail_ids), True))
+        return run(lambda: client().mark(checked(mail_ids), True))
 
-    @server.tool(annotations=writes)
+    @mutate
     def mail_mark_unread(mail_ids: list[str]) -> dict[str, Any]:
         """Mark messages as unread on the mail server. Only do this when the user asks.
 
         mail_ids: 1 to 100 IDs. If some fail, the error lists the result of each mail.
         """
-        return run(lambda: client().mark(_check_ids(mail_ids), False))
+        return run(lambda: client().mark(checked(mail_ids), False))
 
-    @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
-                                             open_world_hint=False))
     def mail_archive(mail_ids: list[str]) -> dict[str, Any]:
         """Move messages to the archive folder of their account. Only do this when the user asks.
 
         mail_ids: 1 to 100 IDs. If some fail, the error lists the result of each mail.
         """
-        return run(lambda: client().archive(_check_ids(mail_ids)))
+        return run(lambda: client().archive(checked(mail_ids)))
+
+    if not read_only:
+        server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
+                                                open_world_hint=False))(mail_archive)
 
     if send is not None:
         @server.tool(annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False,
@@ -365,6 +424,7 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
                     if not isinstance(mail_id, str) or not mail_id.strip():
                         raise ValueError("mail_id must be a non-empty mail ID")
                     identifier = mail_id.strip()
+                    check_mail(identifier)
                     sender = send.forward_sender()
                     to_list, _ = send.recipients(to, None)
                     text = send.check_note(note)
@@ -447,6 +507,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--path", default="/mcp", help="streamable-http: the URL path of the endpoint")
     result.add_argument("--token-file", default="", help="streamable-http: a file with the bearer token (else $UNI_MAIL_MCP_TOKEN)")
     result.add_argument("--allow-remote", action="store_true", help="streamable-http: allow a host that is not loopback")
+    result.add_argument("--account", action="append", default=[], metavar="NAME",
+                        help="serve only this account: every tool refuses the others. Repeat or separate with commas; "
+                             "default: all accounts")
+    result.add_argument("--read-only", action="store_true",
+                        help="leave out the tools that mark, archive or export (mail_send and mail_forward stay with --enable-send)")
     result.add_argument("--enable-send", action="store_true",
                         help="add the mail_send tool (off by default). It sends only to --send-allow recipients; with none, to nobody")
     result.add_argument("--send-allow", action="append", default=[], metavar="ADDRESS",
@@ -504,7 +569,8 @@ def main(argv: list[str] | None = None) -> int:
         send_log.setLevel(logging.INFO)  # every send is logged, whatever --log-level says
         send_log.info("mail_send is ON: allowlist=%s account=%s limit=%d/hour", list(policy.allow) or "EMPTY (nobody)",
                       policy.account or "any", policy.max_per_hour)
-    server = build_server(resolve_socket(args.socket, args.config), args.log_level, policy)
+    accounts = tuple(item.strip() for value in args.account for item in value.split(",") if item.strip())
+    server = build_server(resolve_socket(args.socket, args.config), args.log_level, policy, accounts, args.read_only)
     try:
         if args.transport == "stdio":
             server.run("stdio")

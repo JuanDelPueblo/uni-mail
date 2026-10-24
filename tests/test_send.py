@@ -462,8 +462,8 @@ class McpMainTest(unittest.TestCase):
     def run_main(self, argv, env=None):
         captured = {}
 
-        def fake_build(socket="", log_level="WARNING", send=None):
-            captured["send"] = send
+        def fake_build(socket="", log_level="WARNING", send=None, accounts=(), read_only=False):
+            captured.update(send=send, accounts=accounts, read_only=read_only)
             raise SystemExit(0)
 
         with (mock.patch.object(mcp_server, "build_server", fake_build), mock.patch("sys.stderr"),
@@ -477,6 +477,13 @@ class McpMainTest(unittest.TestCase):
     def test_off_by_default(self):
         code, captured = self.run_main([])
         self.assertIsNone(captured["send"])
+
+    def test_account_and_read_only_reach_the_server(self):
+        _, captured = self.run_main(["--account", "university,gmail", "--account", "outlook", "--read-only"])
+        self.assertEqual(captured["accounts"], ("university", "gmail", "outlook"))
+        self.assertIs(captured["read_only"], True)
+        _, captured = self.run_main([])
+        self.assertEqual((captured["accounts"], captured["read_only"]), ((), False))
 
     def test_options_without_enable_do_not_turn_it_on(self):
         _, captured = self.run_main(["--send-allow", "tony@example.org"])

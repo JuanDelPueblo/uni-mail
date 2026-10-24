@@ -188,6 +188,17 @@ uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-fi
 It refuses to start without a token, or on a non-loopback address without
 `--allow-remote`.
 
+`--account NAME` (repeat it, or separate with commas) limits a server to some
+accounts: every tool refuses the others. `--read-only` leaves out the tools that
+mark, archive or export. Run one server per kind of client, for example a
+read-only one for an assistant and one for a triage agent that may archive only
+its accounts:
+
+```sh
+uni-mail-mcp ... --port 8765 --account university            # triage: read, mark, archive
+uni-mail-mcp ... --port 8768 --read-only                      # assistants: read every account
+```
+
 The MCP server cannot send mail unless you start it with `--enable-send`,
 which adds the `mail_send` tool. It sends only to the recipients that you
 list; with no list it can send to nobody:

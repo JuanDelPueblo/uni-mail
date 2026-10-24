@@ -125,6 +125,19 @@ folders, attachments, export, mark read or unread, archive (and, only when
 started with `--enable-send`, send; see below). It cannot sign in,
 change accounts, read the event log, configure destinations or run commands.
 
+Two options narrow a server, so that each agent can hold only what it needs:
+
+- `--account NAME` (repeat it, or separate with commas) serves only those
+  accounts. `mail_status` shows only them, `mail_list` and `mail_search`
+  without an account list them (several accounts are merged, newest first),
+  and every tool refuses another account or a mail ID of one. A mail ID
+  starts with its account name (`university.3f2a9c1d0b7e4a55`), and account
+  names hold no dot, so the prefix decides. `mail_forward` refuses mail of
+  another account; its sender is still `--send-account`.
+- `--read-only` leaves out `mail_mark_read`, `mail_mark_unread`,
+  `mail_archive` and `mail_export_attachment`. With `--enable-send`,
+  `mail_send` and `mail_forward` are still added.
+
 ## Sending mail
 
 The daemon has one new socket action, `send` (and `send_check`, which signs in

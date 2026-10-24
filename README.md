@@ -142,7 +142,8 @@ tools over stdio, or over Streamable HTTP with a bearer token:
 `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`,
 `mail_attachments`, `mail_export_attachment`, `mail_mark_read`,
 `mail_mark_unread`, `mail_archive`. It cannot sign in, change accounts or
-destinations, or run commands. The tools `mail_send` and `mail_forward` exist
+destinations, or run commands. `--account` limits a server to some accounts and
+`--read-only` leaves out the tools that change mail. The tools `mail_send` and `mail_forward` exist
 only when you start the server with `--enable-send`, and then send only to the
 addresses of `--send-allow` (none by default); `mail_forward` also needs
 `--send-account`; see [docs/INSTALL.md](docs/INSTALL.md). A Nanobot config:

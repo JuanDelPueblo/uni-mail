@@ -77,8 +77,8 @@ class McpTestCase(unittest.IsolatedAsyncioTestCase):
             "archive": {"ok": True, "results": {"university.3f2a9c1d0b7e4a55": {"ok": True}}},
         }
 
-    async def call(self, name: str, arguments: dict[str, Any] | None = None, socket: str | None = None):
-        server = mcp_server.build_server(self.daemon.path if socket is None else socket)
+    async def call(self, name: str, arguments: dict[str, Any] | None = None, socket: str | None = None, **options: Any):
+        server = mcp_server.build_server(self.daemon.path if socket is None else socket, **options)
         async with Client(server) as client:
             return await client.call_tool(name, arguments or {})
 
@@ -213,6 +213,64 @@ class ToolsTest(McpTestCase):
                 self.assertTrue(result.is_error, (tool, bad))
         self.assertEqual(self.daemon.requests, [])
         result = await self.call("mail_archive", {"mail_ids": ["a.b"] * 100})
+        self.assertFalse(result.is_error)
+
+
+class ScopeTest(McpTestCase):
+    """--account and --read-only."""
+
+    async def tools(self, **options: Any) -> set[str]:
+        async with Client(mcp_server.build_server(self.daemon.path, **options)) as client:
+            return {tool.name for tool in (await client.list_tools()).tools}
+
+    async def test_read_only_leaves_out_the_writes(self):
+        self.assertEqual(await self.tools(read_only=True), TOOLS - {
+            "mail_export_attachment", "mail_mark_read", "mail_mark_unread", "mail_archive"})
+        self.assertEqual(await self.tools(accounts=("university",)), TOOLS)
+
+    async def test_status_shows_only_the_accounts_served(self):
+        self.daemon.responses["status"] = {"ok": True, "accounts": [{"name": "university"}, {"name": "gmail"}]}
+        result = await self.call("mail_status", accounts=("gmail",))
+        self.assertEqual(result.structured_content, {"accounts": [{"name": "gmail"}]})
+
+    async def test_list_of_one_account_names_it(self):
+        await self.call("mail_list", accounts=("university",))
+        await self.call("mail_search", {"query": "exam"}, accounts=("university",))
+        self.assertEqual(self.daemon.requests, [
+            {"op": "list", "account": "university", "limit": 50},
+            {"op": "list", "account": "university", "query": "exam", "limit": 50}])
+
+    async def test_list_of_several_accounts_merges_them(self):
+        lists = {
+            "university": [{"id": "university.1", "date": "2026-10-03"}, {"id": "university.2", "date": "2026-10-01"}],
+            "gmail": [{"id": "gmail.1", "date": "2026-10-02"}],
+        }
+        self.daemon.responses["list"] = lambda request: {
+            "ok": True, "count": len(lists[request["account"]]), "messages": lists[request["account"]]}
+        result = await self.call("mail_list", {"limit": 2}, accounts=("university", "gmail"))
+        self.assertEqual(result.structured_content, {
+            "count": 2, "messages": [{"id": "university.1", "date": "2026-10-03"}, {"id": "gmail.1", "date": "2026-10-02"}]})
+        self.assertEqual([request["account"] for request in self.daemon.requests], ["university", "gmail"])
+
+    async def test_other_accounts_are_refused(self):
+        options = {"accounts": ("university",)}
+        calls = [
+            ("mail_list", {"account": "gmail"}),
+            ("mail_search", {"query": "x", "account": "gmail"}),
+            ("mail_folders", {"account": "gmail"}),
+            ("mail_show", {"mail_id": "gmail.3f2a9c1d0b7e4a55"}),
+            ("mail_attachments", {"mail_id": "gmail.3f2a9c1d0b7e4a55"}),
+            ("mail_export_attachment", {"mail_id": "gmail.3f2a9c1d0b7e4a55", "index": 0}),
+            ("mail_mark_read", {"mail_ids": ["university.3f2a9c1d0b7e4a55", "gmail.3f2a9c1d0b7e4a55"]}),
+            ("mail_mark_unread", {"mail_ids": ["gmail.3f2a9c1d0b7e4a55"]}),
+            ("mail_archive", {"mail_ids": ["gmail.3f2a9c1d0b7e4a55"]}),
+        ]
+        for name, arguments in calls:
+            result = await self.call(name, arguments, **options)
+            self.assertTrue(result.is_error, name)
+            self.assertIn("university", self.text(result), name)
+        self.assertEqual(self.daemon.requests, [])
+        result = await self.call("mail_archive", {"mail_ids": ["university.3f2a9c1d0b7e4a55"]}, **options)
         self.assertFalse(result.is_error)
 
 

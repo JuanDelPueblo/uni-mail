@@ -134,8 +134,10 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
       while (!signal.aborted) {
         try {
           if (cursor === undefined) {
-            // The first start follows from the newest event: earlier mail was the old dispatcher's.
-            cursor = Number((await client().request({ op: "event_head" })).last ?? 0);
+            // The first start takes over from the first event that nothing has consumed yet
+            // (a dispatcher that ran before), else from the newest event.
+            const head = await client().request({ op: "event_head" });
+            cursor = head.first_pending ? Number(head.first_pending) - 1 : Number(head.last ?? 0);
             await cursors.register(CURSOR_KEY, { seq: cursor });
           }
           const page = await client().request({ op: "events", after: cursor, timeout: POLL_SECONDS, limit: 100 }, (POLL_SECONDS + 30) * 1000);

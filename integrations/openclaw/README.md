@@ -72,8 +72,9 @@ Rule keys: `agent` (required), `accounts` (default all), `events` (default
 `timeoutSeconds` (default 900), `enabled`.
 
 A run counts as failed when it errors, times out, or its reply starts with
-`AUTOMATION_FAILED`. The first start follows from the newest event, so mail
-that arrived before the plugin was installed starts no run.
+`AUTOMATION_FAILED`. The first start takes over from the first event that
+nothing consumed yet (for example after `uni-mail-dispatch` stopped), else from
+the newest event, so older mail starts no run.
 
 `socket` (advanced) overrides the socket path. By default the plugin uses
 `$UNI_MAIL_SOCKET`, then the `socket` of `~/.config/uni-mail/config.json`, then

@@ -1,0 +1,36 @@
+/* The Mail page of uni-mail. Every rule is under .uni-mail-page; colours come from the Control UI theme. */
+.uni-mail-page { display: grid; gap: 20px; padding: 24px; max-width: 1200px; color: var(--text); }
+.uni-mail-page h1 { margin: 0; font-size: 1.5rem; }
+.uni-mail-page h2 { margin: 0; font-size: 1.1rem; }
+.uni-mail-page h3 { margin: 12px 0 6px; font-size: 0.95rem; color: var(--text-strong, var(--text)); }
+.uni-mail-page p { margin: 6px 0; }
+.uni-mail-header, .uni-mail-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.uni-mail-section { display: grid; gap: 8px; padding: 16px; border: 1px solid var(--border); border-radius: 8px; background: var(--card, var(--bg)); }
+.uni-mail-scroll { overflow-x: auto; }
+.uni-mail-page table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.uni-mail-page th, .uni-mail-page td { padding: 6px 8px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--border); }
+.uni-mail-page th { font-weight: 600; color: var(--muted, var(--text)); }
+.uni-mail-page code { font-family: var(--mono, monospace); font-size: 0.85em; word-break: break-all; }
+.uni-mail-page button { padding: 6px 12px; border: 0; border-radius: 6px; background: var(--accent); color: var(--accent-foreground, var(--text)); font: inherit; cursor: pointer; white-space: nowrap; }
+.uni-mail-page button.uni-mail-secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+.uni-mail-page button:disabled { opacity: 0.6; cursor: default; }
+.uni-mail-page input[type="text"], .uni-mail-page select { padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; }
+.uni-mail-page input[type="text"] { flex: 1; min-width: 240px; }
+.uni-mail-page a { color: var(--accent); }
+.uni-mail-inline, .uni-mail-buttons { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.uni-mail-signin { padding: 12px; border: 1px solid var(--border-strong, var(--border)); border-radius: 8px; }
+.uni-mail-signin[hidden] { display: none; }
+.uni-mail-signin h3 { margin-top: 0; }
+.uni-mail-signin ol { margin: 8px 0; padding-left: 20px; }
+.uni-mail-check { display: block; margin: 8px 0; }
+.uni-mail-muted { color: var(--muted, var(--text)); font-size: 0.85em; }
+.uni-mail-number { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.uni-mail-note { white-space: pre-wrap; overflow-wrap: anywhere; }
+.uni-mail-error, .uni-mail-error-text { color: var(--danger); overflow-wrap: anywhere; }
+.uni-mail-error-text { font-size: 0.85em; }
+.uni-mail-warn { color: var(--warn); }
+.uni-mail-ok { color: var(--ok); }
+.uni-mail-state { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 0.85em; }
+.uni-mail-state-ok { background: var(--ok-subtle, transparent); color: var(--ok); }
+.uni-mail-state-wait { background: var(--warn-subtle, transparent); color: var(--warn); }
+.uni-mail-state-bad { background: var(--danger-subtle, transparent); color: var(--danger); }

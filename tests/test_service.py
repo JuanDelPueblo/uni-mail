@@ -567,6 +567,7 @@ class ServiceTest(unittest.TestCase):
         client = Client(str(self.root / "mail.sock"))
         status = client.status()["accounts"][0]
         self.assertEqual((status["name"], status["status"], status["messages"], status["unread"]), ("uni", "idle", 3, 2))
+        self.assertEqual(status["auth"], "oauth")
         self.assertEqual(client.list(unread=True)["count"], 2)
         self.assertEqual(client.list(since="2d")["count"], 2)
         with self.assertRaises(MailServiceError) as raised:

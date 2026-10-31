@@ -1,9 +1,14 @@
 {
   "id": "uni-mail",
   "name": "uni-mail",
-  "description": "Mail tools from the uni-mail daemon, scoped per agent, and agent runs for new mail.",
+  "description": "Mail tools from the uni-mail daemon, scoped per agent, agent runs for new mail, and a Mail page in the Control UI.",
   "categories": ["inbox-collaboration"],
   "activation": { "onStartup": true },
+  "controlUi": {
+    "entry": "dist/control-ui/mail-page.js",
+    "styles": ["dist/control-ui/mail-page.css"]
+  },
+  "uiCapabilities": ["page", "navigation"],
   "contracts": {
     "tools": [
       "mail_status",

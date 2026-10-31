@@ -10,10 +10,13 @@ daemon's socket directly: no MCP server, no hook endpoint, no tokens.
   agent: one fresh run per event. The message names only the account, the mail
   ID and the event ID; the agent reads the mail with `mail_show`. The queue is
   OpenClaw's own ingress queue: it survives restarts, retries a failed run
-  (3 attempts) and keeps the ones that still fail.
+  (3 attempts) and keeps the ones that still fail (the Mail page shows them).
 - **Notes.** `mail_note` keeps a decision on a message in the daemon
   (`uni-mail notes` shows them); `mail_notes` reads them back, so one agent can
   see what another did with a mail.
+- **Mail page.** A Mail entry in the Control UI sidebar shows the accounts,
+  lets an operator sign in to an account again, lists the new-mail runs with a
+  Retry for the failed ones, and shows recent notes.
 
 Requires OpenClaw 2026.10.6 or newer and a running `uni-maild` that the
 gateway's user can reach.
@@ -79,6 +82,38 @@ the newest event, so older mail starts no run.
 `socket` (advanced) overrides the socket path. By default the plugin uses
 `$UNI_MAIL_SOCKET`, then the `socket` of `~/.config/uni-mail/config.json`, then
 `/run/uni-mail/mail.sock`.
+
+## Mail page
+
+The page needs **Settings → Labs → Custom plugin UI** in the Control UI, or in
+the config:
+
+```json5
+{ gateway: { controlUi: { experimental: { customPlugins: true } } } }
+```
+
+Without it the plugin works as before; only the page is missing. The page is
+open to every operator: reading needs the `operator.read` scope, signing in and
+Retry need `operator.write`.
+
+- **Accounts**: each account with its state, last sync, unread and all
+  messages. **Sign in again** starts the OAuth sign-in (like
+  `uni-mail auth login`): open the link, sign in, then paste the address the
+  browser ended at (the page that does not load). Password accounts have no
+  button (daemons older than this page do not say which accounts use a
+  password, so every account gets the button and the daemon refuses).
+- **New-mail runs**: the plugin's ingress queue. Running, queued (with the
+  error of the last attempt) and failed runs; **Retry** queues a failed run
+  again and the service starts it within a minute. With no `rules`, nothing
+  follows new mail and a retried run does not start.
+- **Recent notes**: the notes of the last day, 7, 30 or 90 days, newest first.
+
+The page is plain browser JavaScript with no imports
+(`dist/control-ui/mail-page.js` and `.css`, named in `openclaw.plugin.json`
+under `controlUi`), so there is no build step. It refreshes every 30 seconds
+while it is on screen. After a change to these files, restart the gateway or
+use **Plugins → Advanced → Customize UI → Reload plugin UI**; the backend
+(`src/page.ts`) changes with a plugin reload or a gateway restart.
 
 ## Tests
 

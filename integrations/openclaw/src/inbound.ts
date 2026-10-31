@@ -78,6 +78,11 @@ export function deliveriesFor(event: MailResponse, rules: Rule[]): Delivery[] {
     }));
 }
 
+/** The queue of new-mail runs. The service and the Mail page open the same one. */
+export function openDeliveryQueue(api: any) {
+  return api.runtime.state.openChannelIngressQueue({ accountId: "uni-mail" });
+}
+
 const sleep = (ms: number, signal: AbortSignal) =>
   new Promise<void>((resolve) => {
     const timer = setTimeout(resolve, ms);
@@ -115,13 +120,14 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
   }
 
   async function follow(signal: AbortSignal, logger: any) {
-    const queue = api.runtime.state.openChannelIngressQueue({ accountId: "uni-mail" });
+    const queue = openDeliveryQueue(api);
     const longest = Math.max(900, ...rules().map((rule) => rule.timeoutSeconds)) * 1000;
     const drain = api.runtime.state.openChannelIngressDrain({
       queue,
       dispatchClaimedEvent: (claim: any) => runDelivery(claim),
       deriveLaneKey: (record: any) => record.payload?.agent,
-      retryPolicy: { maxAttempts: 3, baseMs: 60_000, maxMs: 15 * 60_000 },
+      // Without deadLetterMinAgeMs the drain keeps retrying for a day (its default) after the third attempt.
+      retryPolicy: { maxAttempts: 3, baseMs: 60_000, maxMs: 15 * 60_000, deadLetterMinAgeMs: 0 },
       adoptionStallTimeoutMs: longest + 120_000,
       claimLeaseMs: longest + 120_000,
       onLog: (message: string) => logger.info(`uni-mail queue: ${message}`),

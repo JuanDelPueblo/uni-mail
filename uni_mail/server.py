@@ -168,6 +168,7 @@ class Service:
                 "name": account.name,
                 "provider": account.cfg.provider,
                 "address": account.cfg.address,
+                "auth": account.cfg.auth,
                 "status": account.status,
                 "error": account.error,
                 "last_sync": datetime.fromtimestamp(synced, timezone.utc).isoformat() if synced else "",

@@ -131,6 +131,31 @@ The account starts to sync in a few seconds. If a provider later refuses the
 refresh token, the account stops and the daemon records one `mail.auth`
 event.
 
+### Sending mail
+
+`uni-mail send` submits mail over SMTP with the same refresh token (XOAUTH2).
+Gmail needs nothing more: its sign-in scope, `https://mail.google.com/`,
+already allows SMTP. A Microsoft account needs the extra scope `SMTP.Send`, so
+sign in once more with `--send` (this keeps the IMAP scope):
+
+```sh
+uni-mail auth login outlook --send
+uni-mail send-check outlook          # signs in to SMTP, sends nothing
+```
+
+`send-check` also shows a tenant that has SMTP AUTH turned off (Exchange
+Online: `Set-CASMailbox -SmtpClientAuthenticationDisabled $false`, or the
+organization-wide setting); then the account cannot send.
+
+Forward a message from the command line with:
+
+```sh
+uni-mail forward <mail-id> --account gmail --to tony@example.org [--note "FYI"] [--force]
+```
+
+The sender account needs the same SMTP sign-in as `send`. The original is read
+with `BODY.PEEK[]` and stays unread.
+
 ## 6. Run the dispatcher
 
 Add destinations to the `dispatch` section (see [EVENTS.md](EVENTS.md) and
@@ -162,6 +187,37 @@ uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-fi
 
 It refuses to start without a token, or on a non-loopback address without
 `--allow-remote`.
+
+`--account NAME` (repeat it, or separate with commas) limits a server to some
+accounts: every tool refuses the others. `--read-only` leaves out the tools that
+mark, archive, trash or export. Run one server per kind of client, for example a
+read-only one for an assistant and one for a triage agent that may archive only
+its accounts:
+
+```sh
+uni-mail-mcp ... --port 8765 --account university            # triage: read, mark, archive
+uni-mail-mcp ... --port 8768 --read-only                      # assistants: read every account
+```
+
+The MCP server cannot send mail unless you start it with `--enable-send`,
+which adds the `mail_send` tool. It sends only to the recipients that you
+list; with no list it can send to nobody:
+
+```sh
+uni-mail-mcp ... --enable-send --send-allow tony@example.org --send-account gmail
+# or: UNI_MAIL_MCP_SEND_ALLOW=tony@example.org,@example.edu
+```
+
+`--send-allow` takes addresses, or `@domain` for every address of a domain
+(repeat it, or separate with commas). Other options: `--send-account NAME`
+(send only from that account), `--send-rate-limit N` (sends per hour, default
+10), `--send-max-body` (20000 characters) and `--send-max-subject` (200).
+The same flags govern `mail_forward(mail_id, to, note)`, which forwards one
+indexed message with its attachments to the allowlisted recipients. It always
+sends from `--send-account` (without that option it refuses), counts against
+the same hourly limit, and never forwards one mail to the same address twice.
+`force` exists only on the CLI. See [DESIGN.md](DESIGN.md#sending-mail) and
+[DESIGN.md](DESIGN.md#forwarding-mail).
 
 ## As a user service
 

@@ -50,6 +50,7 @@ class Receiver:
     def __init__(self):
         self.requests: list[dict] = []
         self.statuses: list[int | tuple[int, dict]] = []
+        self.bodies: list[bytes] = []
         self.delay = 0.0
         receiver = self
 
@@ -67,10 +68,11 @@ class Receiver:
                 self.send_response(status)
                 for key, value in headers.items():
                     self.send_header(key, value)
-                self.send_header("Content-Length", "2")
+                answer = receiver.bodies.pop(0) if receiver.bodies else b"ok"
+                self.send_header("Content-Length", str(len(answer)))
                 self.end_headers()
                 try:
-                    self.wfile.write(b"ok")
+                    self.wfile.write(answer)
                 except OSError:
                     pass  # the client timed out
 
@@ -85,7 +87,7 @@ class Receiver:
         self.thread.join()
 
 
-class DispatchTest(unittest.TestCase):
+class DispatchCase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
@@ -160,6 +162,8 @@ class DispatchTest(unittest.TestCase):
     def command_lines(self) -> list[str]:
         return self.log.read_text().splitlines() if self.log.exists() else []
 
+
+class DispatchTest(DispatchCase):
     # Fan-out and acknowledgements
 
     def test_one_event_reaches_both_destinations_with_the_same_ids(self):
@@ -565,6 +569,12 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual((code, tested["outcome"]), (0, "delivered"))
         self.receiver.statuses = [400]
         self.assertEqual(run("test", "hook")[0], 1)
+
+
+class RemovedOpenClawTest(unittest.TestCase):
+    def test_openclaw_destination_is_refused_with_a_pointer(self):
+        with self.assertRaisesRegex(config.ConfigError, "integrations/openclaw"):
+            dispatch_config.parse({"destinations": {"oc": {"type": "openclaw", "url": "http://127.0.0.1:1/hooks/agent"}}})
 
 
 class WebhookRulesTest(unittest.TestCase):

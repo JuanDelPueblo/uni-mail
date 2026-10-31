@@ -87,6 +87,11 @@ each attempt, so a rotation needs no restart) or `secret_env` (a variable in
 the dispatcher's environment), `allow_private_network` (default `false`),
 `allow_http` (default `false`).
 
+OpenClaw has no destination type: the OpenClaw plugin
+([integrations/openclaw](../integrations/openclaw/README.md)) follows the
+event log itself. A config with `"type": "openclaw"` is refused with a pointer
+to it.
+
 The dispatcher reads the config at start. Restart `uni-mail-dispatch` after a
 change; `uni-mail dispatch check` validates it first.
 

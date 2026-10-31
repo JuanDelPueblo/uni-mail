@@ -25,7 +25,7 @@ from typing import Any
 from .. import events
 from ..client import Client, MailServiceError
 from .command import CommandSink
-from .config import Destination, DispatchConfig
+from .config import HTTP_KINDS, Destination, DispatchConfig
 from .queue import Queue
 from .sinks import Result, redact
 from .webhook import WebhookSink
@@ -74,7 +74,7 @@ class Dispatcher:
     def _secrets(self) -> list[str]:
         found = []
         for destination in self.cfg.destinations.values():
-            if destination.kind == "webhook":
+            if destination.kind in HTTP_KINDS:
                 try:
                     found.append(destination.secret())
                 except Exception:  # noqa: BLE001 - only for redaction

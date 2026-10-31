@@ -53,6 +53,16 @@ CREATE TABLE IF NOT EXISTS events (
     event_id TEXT,
     data TEXT NOT NULL DEFAULT '{}'
 );
+CREATE TABLE IF NOT EXISTS notes (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    mail_id TEXT NOT NULL,
+    account TEXT NOT NULL,
+    author TEXT NOT NULL DEFAULT '',
+    created REAL NOT NULL,
+    text TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS notes_mail ON notes (mail_id);
+CREATE INDEX IF NOT EXISTS notes_created ON notes (created);
 """
 # PRAGMA user_version of the index. 0 is the hermes-mail format; 2 adds the
 # stable event IDs and the event data. The upgrade only adds columns, so the
@@ -298,6 +308,40 @@ class Store:
             return 0
         return self._write("DELETE FROM events WHERE created<? AND seq<(SELECT MAX(seq) FROM events)", (time.time() - days * 86400,))
 
+
+    # Notes: what an agent or a person decided about a message ("kept unread:
+    # exam moved"). They outlive the message in the index and are pruned by age.
+
+    def add_note(self, mail_id: str, account: str, author: str, text: str) -> dict[str, Any]:
+        with self._lock:
+            cursor = self._db.execute("INSERT INTO notes (mail_id, account, author, created, text) VALUES (?, ?, ?, ?, ?)",
+                                      (mail_id, account, author, time.time(), text))
+            return self._note_row(self._db.execute("SELECT * FROM notes WHERE seq=?", (cursor.lastrowid,)).fetchone())
+
+    @staticmethod
+    def _note_row(row: sqlite3.Row) -> dict[str, Any]:
+        return {"seq": row["seq"], "mail_id": row["mail_id"], "account": row["account"], "author": row["author"],
+                "created": row["created"], "text": row["text"]}
+
+    def notes(self, mail_id: str = "", accounts: Iterable[str] = (), since: float = 0.0, limit: int = 100) -> list[dict[str, Any]]:
+        """Notes, newest first. With `mail_id`, only that message's; with `accounts`, only theirs."""
+        where, args = ["created>=?"], [since]
+        if mail_id:
+            where.append("mail_id=?")
+            args.append(mail_id)
+        names = list(dict.fromkeys(accounts))
+        if names:
+            where.append(f"account IN ({','.join('?' * len(names))})")
+            args.extend(names)
+        rows = self._rows(f"SELECT * FROM notes WHERE {' AND '.join(where)} ORDER BY seq DESC LIMIT ?",
+                          (*args, max(1, min(limit, 1000))))
+        return [self._note_row(row) for row in rows]
+
+    def prune_notes(self, days: int) -> int:
+        """Delete the notes that are older than `days`. 0 keeps every note."""
+        if days <= 0:
+            return 0
+        return self._write("DELETE FROM notes WHERE created<?", (time.time() - days * 86400,))
 
     # Part cache
 

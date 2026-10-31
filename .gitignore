@@ -1,6 +1,8 @@
 __pycache__/
 *.pyc
 dist/
+# The OpenClaw plugin's Mail page is hand-written browser JavaScript, not build output.
+!/integrations/openclaw/dist/
 build/
 *.egg-info/
 .venv/

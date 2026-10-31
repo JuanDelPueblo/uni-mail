@@ -163,6 +163,13 @@ class ConfigTest(unittest.TestCase):
         self.assertFalse(hasattr(account, "notify"))
         self.assertEqual(str(cfg.socket), "/run/uni-mail/mail.sock")
 
+    def test_trash_folder_defaults_by_provider(self):
+        self.assertEqual(config.parse(self.base()).accounts["uni"].trash_folder, "Deleted Items")
+        self.assertEqual(config.parse(self.base(provider="google")).accounts["uni"].trash_folder, "[Gmail]/Trash")
+        imap = config.parse(self.base(provider="imap", host="mail.example.com", password_file="/x")).accounts["uni"]
+        self.assertEqual(imap.trash_folder, "")
+        self.assertEqual(config.parse(self.base(trash_folder="Bin")).accounts["uni"].trash_folder, "Bin")
+
     def test_archive_folder_defaults_by_provider(self):
         microsoft = config.parse(self.base()).accounts["uni"]
         self.assertEqual(microsoft.archive_folder, "Archive")

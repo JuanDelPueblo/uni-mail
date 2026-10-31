@@ -16,6 +16,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import socketserver
@@ -25,7 +26,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from . import auth, config, events, mime, settings
+from . import auth, config, events, mime, send, settings
 from .account import MailAccount, MailError, attachment_part, attachments, default_imap_factory
 from .imapproto import Part, attachment_parts
 from .store import Store
@@ -34,6 +35,8 @@ log = logging.getLogger("uni_mail")
 
 REQUEST_LIMIT = 1024 * 1024
 MAX_WAIT = 300
+MAX_NOTE_CHARS = 2000
+MAIL_DIGEST = re.compile(r"[0-9a-f]{16}")
 # The socket of a hermes-mail daemon. uni-maild does not start while one
 # answers there, so the two never sync the same accounts side by side.
 LEGACY_SOCKET = Path("/run/hermes-mail/mail.sock")
@@ -64,20 +67,24 @@ def parse_time(value: str) -> str:
 
 
 class Service:
-    def __init__(self, cfg: config.Config, imap_factory: Callable = default_imap_factory):
+    def __init__(self, cfg: config.Config, imap_factory: Callable = default_imap_factory,
+                 smtp_factory: Callable = send.default_smtp_factory):
         self.cfg = cfg
         self.imap_factory = imap_factory
+        self.smtp_factory = smtp_factory
         self.store = Store(cfg.state_dir)
         self.tokens = auth.TokenStore(cfg.state_dir / "tokens")
         self.logins = auth.LoginFlow(self.tokens)
         self.settings = settings.Settings(cfg.state_dir, cfg.base) if cfg.web_settings else None
         self.settings_errors: dict[str, str] = {}
+        self.ledger = send.ForwardLedger(cfg.state_dir / "forwarded.jsonl")
         self.accounts: dict[str, MailAccount] = {}
         self.threads: list[threading.Thread] = []
         self._started = False
         self._reconfigure = threading.Lock()
         self.apply()
         self.store.prune_events(cfg.event_retention_days)
+        self.store.prune_notes(cfg.note_retention_days)
 
     def _configured(self) -> dict[str, config.Account]:
         if self.settings is None:
@@ -161,6 +168,7 @@ class Service:
                 "name": account.name,
                 "provider": account.cfg.provider,
                 "address": account.cfg.address,
+                "auth": account.cfg.auth,
                 "status": account.status,
                 "error": account.error,
                 "last_sync": datetime.fromtimestamp(synced, timezone.utc).isoformat() if synced else "",
@@ -177,7 +185,8 @@ class Service:
     def op_folders(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
         return {"account": account.name, "folders": account.list_folders(),
-                "archive_folder": account.cfg.archive_folder, "synced": list(account.cfg.folders)}
+                "archive_folder": account.cfg.archive_folder, "trash_folder": account.cfg.trash_folder,
+                "synced": list(account.cfg.folders)}
 
     def op_list(self, request: dict[str, Any]) -> dict[str, Any]:
         account = request.get("account") or ""
@@ -277,6 +286,12 @@ class Service:
         return response
 
     def op_archive(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._move(request, "archive")
+
+    def op_trash(self, request: dict[str, Any]) -> dict[str, Any]:
+        return self._move(request, "trash")
+
+    def _move(self, request: dict[str, Any], kind: str) -> dict[str, Any]:
         ids = request.get("ids")
         if not isinstance(ids, list) or not ids:
             raise RequestError("ids must be a non-empty list of mail IDs")
@@ -290,7 +305,7 @@ class Service:
                 by_account.setdefault(record["account"], []).append(record)
         for name, records in by_account.items():
             try:
-                results.update(self._account(name).archive(records))
+                results.update(getattr(self._account(name), kind)(records))
             except MailError as error:
                 results.update({record["id"]: {"ok": False, "error": str(error)} for record in records})
         failed = {key: value for key, value in results.items() if not value.get("ok")}
@@ -337,11 +352,48 @@ class Service:
         self.store.prune_events(self.cfg.event_retention_days)
         return {"consumed": count}
 
+    def op_note(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Keep a note on a message: what an agent or a person decided about it. The message may
+        have left the index already (archiving removes it), so a well-formed ID of a known
+        account is enough."""
+        identifier = str(request.get("id") or "").strip()
+        record = self.store.get(identifier)
+        if record is None:
+            account, _, digest = identifier.partition(".")
+            if account not in self.accounts or not MAIL_DIGEST.fullmatch(digest):
+                raise RequestError(f"message not found: {identifier} (not a mail ID of a known account)")
+            record = {"id": identifier, "account": account}
+        text = request.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise RequestError("text must be non-empty text")
+        if len(text) > MAX_NOTE_CHARS:
+            raise RequestError(f"text is longer than {MAX_NOTE_CHARS} characters")
+        author = request.get("author") or ""
+        if not isinstance(author, str) or len(author) > 100 or "\n" in author:
+            raise RequestError("author must be one line of at most 100 characters")
+        self.store.prune_notes(self.cfg.note_retention_days)
+        return {"note": self.store.add_note(record["id"], record["account"], author.strip(), text.strip())}
+
+    def op_notes(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Notes, newest first: of one message (`id`), or of some accounts (`accounts`), since a time."""
+        accounts = request.get("accounts") or []
+        if isinstance(accounts, str):
+            accounts = [accounts]
+        if not isinstance(accounts, list) or not all(isinstance(name, str) for name in accounts):
+            raise RequestError("accounts must be a list of account names")
+        since = datetime.fromisoformat(parse_time(str(request["since"]))).timestamp() if request.get("since") else 0.0
+        notes = self.store.notes(str(request.get("id") or ""), accounts, since, int(request.get("limit") or 100))
+        return {"count": len(notes), "notes": notes}
+
     def op_auth_begin(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
         if not account.session:
             raise RequestError(f"account {account.name} uses a password, not OAuth")
-        return self.logins.begin(account.name, account.provider, account.cfg.address)
+        want_send = bool(request.get("send"))
+        if want_send and not account.provider.send_scope:
+            raise RequestError(f"account {account.name}: the {account.cfg.provider} sign-in scope already allows sending; "
+                               "no extra consent is needed")
+        return self.logins.begin(account.name, account.provider, account.cfg.address, want_send)
 
     def op_auth_finish(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))
@@ -351,6 +403,121 @@ class Service:
         account.session.forget()
         account.wake()
         return {"account": account.name, "message": "signed in; the account starts to sync in a few seconds"}
+
+    # Sending
+
+    def _sender(self, name: str) -> MailAccount:
+        account = self._account(name)
+        if not account.session or not account.provider.smtp_host:
+            raise RequestError(f"account {account.name} cannot send mail: sending supports OAuth accounts of the "
+                               "google and microsoft providers")
+        return account
+
+    def op_send_check(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Sign in to the SMTP server of an account and leave again. Sends nothing."""
+        account = self._sender(str(request.get("account") or ""))
+        send.check(account.cfg.address, account.provider, account.session, self.smtp_factory)
+        return {"account": account.name, "address": account.cfg.address, "can_send": True,
+                "smtp": f"{account.provider.smtp_host}:{account.provider.smtp_port}"}
+
+    def op_send(self, request: dict[str, Any]) -> dict[str, Any]:
+        account = self._sender(str(request.get("account") or ""))
+        to = send.parse_addresses(request.get("to"), "to")
+        cc = send.parse_addresses(request.get("cc"), "cc")
+        bcc = send.parse_addresses(request.get("bcc"), "bcc")
+        subject = send.single_line(request.get("subject") or "", "subject", send.MAX_SUBJECT)
+        body = request.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise RequestError("body must be non-empty text")
+        if len(body) > send.MAX_BODY_CHARS:
+            raise RequestError(f"body is longer than {send.MAX_BODY_CHARS} characters")
+        reference = ""
+        if request.get("reply_to"):
+            record = self._record(request["reply_to"])
+            if record["account"] != account.name:
+                raise RequestError(f"message {record['id']} belongs to account {record['account']}; reply from that account")
+            reference = record["message_id"]
+            subject = subject or send.reply_subject(record["subject"])
+            if not to and not cc:
+                to = send.parse_addresses(record["sender"], "the sender of the original")
+        if not to:
+            raise RequestError("to must name at least one recipient")
+        if not subject:
+            raise RequestError("subject must not be empty")
+        envelope = list(dict.fromkeys(address for address in (*to, *cc, *bcc)))
+        if len(envelope) > send.MAX_RECIPIENTS:
+            raise RequestError(f"at most {send.MAX_RECIPIENTS} recipients")
+        message = send.build_message(account.cfg.address, to, cc, subject, body, bool(request.get("html")), reference)
+        refused = send.deliver(account.cfg.address, account.provider, account.session, message, envelope, self.smtp_factory)
+        message_id = str(message["Message-ID"])
+        # The body is never logged.
+        log.info("sent mail: account=%s message_id=%s to=%s cc=%s bcc=%s subject=%r", account.name, message_id, to, cc, bcc,
+                 subject[:200])
+        result: dict[str, Any] = {"account": account.name, "from": account.cfg.address, "message_id": message_id,
+                                  "to": to, "cc": cc, "bcc": len(bcc), "subject": subject}
+        if refused:
+            result["refused"] = refused
+            log.warning("sent mail %s: the server refused %s", message_id, sorted(refused))
+        return result
+
+    def op_forward(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Send an indexed message, as a new message from `account`, to the recipients. The original stays untouched.
+
+        A mail that was already forwarded to an address is not sent to it again, unless `force` is set."""
+        record = self._record(request.get("id"))
+        sender = self._sender(str(request.get("account") or ""))
+        to = send.parse_addresses(request.get("to"), "to")
+        if not to:
+            raise RequestError("to must name at least one recipient")
+        if len(to) > send.MAX_RECIPIENTS:
+            raise RequestError(f"at most {send.MAX_RECIPIENTS} recipients")
+        note = request.get("note") or ""
+        if not isinstance(note, str) or len(note) > send.MAX_NOTE:
+            raise RequestError(f"note must be text of at most {send.MAX_NOTE} characters")
+        force = bool(request.get("force"))
+        source = self._account(record["account"])
+        with self.ledger.lock:
+            done = set() if force else self.ledger.done(record["id"])
+            skipped = [address for address in to if address.lower() in done]
+            targets = [address for address in to if address.lower() not in done]
+            if not targets:
+                log.info("forward skipped, already forwarded: account=%s mail_id=%s to=%s", sender.name, record["id"], skipped)
+                return {"id": record["id"], "forwarded": False, "already_forwarded": skipped,
+                        "message": f"{record['id']} was already forwarded to {', '.join(skipped)}; nothing was sent"}
+            parts: list[Any] = []
+            omitted: list[str] = []
+            if record["size"] <= source.cfg.max_part_mb * 1024 * 1024:
+                text, parts = send.forwarded_content(source.fetch_message(record))
+            else:
+                # Too big to fetch whole: forward the text, and name the attachments that stay behind.
+                text = source.body(record)
+                omitted = [f"{item['name']} ({item['size'] // 1024} KiB)" for item in attachments(record)]
+            origin = {"account": source.cfg.address, "sender": record["sender"], "date": record["date"],
+                      "subject": record["subject"]}
+            try:
+                reply_to = send.parse_addresses(record["sender"], "the sender of the original")
+            except send.SendError:
+                reply_to = []
+            limit = min(send.MAX_FORWARD_ATTACHMENTS, source.cfg.max_part_mb * 1024 * 1024)
+            message, omitted = send.build_forward(sender.cfg.address, targets, reply_to, origin, text, parts,
+                                                  str(note), limit, omitted)
+            refused = send.deliver(sender.cfg.address, sender.provider, sender.session, message, targets, self.smtp_factory)
+            self.ledger.record(record["id"], [address for address in targets if address not in refused], sender.name,
+                               str(message["Message-ID"]))
+        message_id = str(message["Message-ID"])
+        # The body is never logged.
+        log.info("forwarded mail: account=%s mail_id=%s message_id=%s to=%s subject=%r", sender.name, record["id"], message_id,
+                 targets, str(message["Subject"])[:200])
+        result: dict[str, Any] = {"id": record["id"], "forwarded": True, "account": sender.name, "from": sender.cfg.address,
+                                  "message_id": message_id, "to": targets, "subject": str(message["Subject"])}
+        if skipped:
+            result["already_forwarded"] = skipped
+        if omitted:
+            result["attachments_omitted"] = omitted
+        if refused:
+            result["refused"] = refused
+            log.warning("forwarded mail %s: the server refused %s", message_id, sorted(refused))
+        return result
 
     def _settings(self) -> settings.Settings:
         if self.settings is None:
@@ -407,7 +574,7 @@ class Service:
             return {"ok": False, "error": f"unknown operation {request.get('op')!r}"}
         try:
             result = operation(request)
-        except (RequestError, MailError, auth.AuthError, auth.TransientAuthError, config.ConfigError) as error:
+        except (RequestError, MailError, send.SendError, auth.AuthError, auth.TransientAuthError, config.ConfigError) as error:
             return {"ok": False, "error": str(error)}
         except (KeyError, TypeError, ValueError) as error:
             return {"ok": False, "error": f"bad request: {error}"}

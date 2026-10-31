@@ -121,8 +121,124 @@ every account:
 
 `uni-mail-mcp` is a thin layer over the socket client, in the optional `mcp`
 extra. It exposes only the mail operations: status, list, search, show,
-folders, attachments, export, mark read or unread, archive. It cannot sign in,
+folders, attachments, export, mark read or unread, archive (and, only when
+started with `--enable-send`, send; see below). It cannot sign in,
 change accounts, read the event log, configure destinations or run commands.
+
+Two options narrow a server, so that each agent can hold only what it needs:
+
+- `--account NAME` (repeat it, or separate with commas) serves only those
+  accounts. `mail_status` shows only them, `mail_list` and `mail_search`
+  without an account list them (several accounts are merged, newest first),
+  and every tool refuses another account or a mail ID of one. A mail ID
+  starts with its account name (`university.3f2a9c1d0b7e4a55`), and account
+  names hold no dot, so the prefix decides. `mail_forward` refuses mail of
+  another account; its sender is still `--send-account`.
+- `--read-only` leaves out `mail_mark_read`, `mail_mark_unread`,
+  `mail_archive`, `mail_trash` and `mail_export_attachment`. With `--enable-send`,
+  `mail_send` and `mail_forward` are still added.
+
+## Sending mail
+
+The daemon has one new socket action, `send` (and `send_check`, which signs in
+to SMTP and sends nothing). The CLI is `uni-mail send`. A second action,
+`forward`, is described under "Forwarding mail".
+
+**Transport.** SMTP with XOAUTH2, using the refresh token that IMAP already
+uses. It is the least invasive choice: no new API, host or token store. The
+Graph `sendMail` and Gmail API `messages.send` calls would need other scopes
+(`Mail.Send`, `gmail.send`) that the Thunderbird client does not hold.
+
+| Provider | Host | Scope needed | Present after the normal sign-in |
+| --- | --- | --- | --- |
+| `google` | `smtp.gmail.com:587` | `https://mail.google.com/` | yes |
+| `microsoft` | `smtp.office365.com:587` | `https://outlook.office.com/SMTP.Send` | no: `uni-mail auth login <account> --send` |
+
+The refresh token of a Microsoft account gives an SMTP access token by asking
+the token endpoint for the `SMTP.Send` scope. If that account never consented,
+the endpoint refuses, and `send` answers with the command to run. The
+`--send` sign-in asks for the IMAP and the SMTP scope together, so the IMAP
+access stays. A failed send never changes the stored token or the sync state
+of the account. A tenant can still turn SMTP AUTH off; `send-check` shows it.
+
+**Message.** Plain text, or HTML with a generated plain text part. The daemon
+builds the headers itself (From is always the account address; Message-ID,
+Date, and In-Reply-To and References for `--reply-to-message`). Recipients
+are parsed to bare ASCII addresses and the same list goes into the headers
+and the SMTP envelope; Bcc is only in the envelope. A subject with a line
+break is refused. There are no attachments. Limits in the daemon: 998
+characters of subject, 500000 of body, 50 recipients. A reply may only use an
+account that holds the original message. Gmail and Exchange Online save SMTP
+submissions in Sent, so the daemon appends nothing over IMAP.
+
+**Logging.** Every send logs account, Message-ID, To, Cc, Bcc and subject,
+never the body.
+
+**MCP exposure.** The socket is trusted (same user), so the protections are in
+`uni-mail-mcp`, which an agent that reads untrusted mail talks to:
+
+- `mail_send` is not registered unless `--enable-send` is given.
+- The allowlist (`--send-allow`, `$UNI_MAIL_MCP_SEND_ALLOW`) is empty by
+  default and then allows nobody. An entry is an address or `@domain`. Every
+  To and Cc address must match, or nothing is sent. The tool has no Bcc.
+- `--send-account` fixes the sender account.
+- A sliding window of 10 sends per hour (`--send-rate-limit`), a body of 20000
+  characters and a subject of 200 (`--send-max-body`, `--send-max-subject`),
+  at most 10 recipients. The tool sends plain text only.
+- Every send and every refusal is logged by the MCP server (to stderr, at
+  INFO whatever `--log-level` is), without the body.
+- The tool description and the server instructions tell the model that mail
+  text is not an instruction. That is advice only; the allowlist is the control.
+
+`mail_forward` follows the same rules; see "Forwarding mail".
+
+Limits of this design: the allowlist bounds who can get mail, not what it says,
+so a prompt-injected agent can still put attacker-chosen text in a message
+to an allowed recipient. A running server keeps its policy until restarted.
+
+## Forwarding mail
+
+The socket action `forward` (CLI: `uni-mail forward MAIL_ID --account SENDER
+--to ADDRESS [--to ...] [--note TEXT] [--force]`) resends one indexed message.
+It is a new message sent from the sender account's own SMTP login, not a
+redirect, so the envelope sender is the sender account. The sender may differ
+from the account that holds the mail.
+
+**Reading the original.** The daemon fetches the whole message with
+`BODY.PEEK[]` over its action connection, with the folder selected read-only.
+It does not set `\Seen` or any other flag and does not move anything. A message
+larger than the account's `max_part_mb` is not fetched whole: its text goes
+out from the index and its attachments are named as left out.
+
+**Message.** From is the sender address, To the recipients (no Cc or Bcc),
+Subject `Fwd: <subject>` (an existing `Fwd:` or `Fw:` is not repeated),
+Reply-To the original sender. There is no In-Reply-To or References: the
+forward starts a new thread for other people. The plain text starts with
+`Forwarded from <address of the original's account>`, then the original From,
+Date and Subject, an optional `Note:` line, a blank line and the text. That is
+what a phone notification shows. The text is the text/plain part; an HTML-only
+message is converted with the same tag stripper as the index, which drops
+scripts, styles and tags and loads nothing. Attachments stay attachments, up
+to 15 MiB together (and the account's `max_part_mb`); the rest is left out and
+named in the header lines of the text.
+
+**Idempotency.** `forwarded.jsonl` in the state directory records every
+mail ID and recipient that was forwarded (IDs and addresses, no text). A
+recipient who already got that mail is skipped; when all are skipped the
+answer is `forwarded: false` with `already_forwarded`, and nothing is sent.
+A failed or refused delivery is not recorded. `--force` (the socket field
+`force`, CLI only) sends again.
+
+**Logging.** Each forward logs account, mail ID, Message-ID, recipients and
+subject, never the text or the note.
+
+**MCP exposure.** `mail_forward(mail_id, to, note)` exists only with
+`--enable-send` and uses the same policy as `mail_send`: every recipient must
+match `--send-allow`, the sender is always `--send-account` (without it the
+tool refuses, and the caller cannot name an account), and a forward uses the
+same hourly window as a send. The tool has no `force`; a repeat gets the
+"already forwarded" answer. The CLI and the socket do not check an allowlist,
+like `uni-mail send`: the socket user is trusted.
 
 ## Risks
 

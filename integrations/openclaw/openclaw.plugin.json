@@ -1,0 +1,124 @@
+{
+  "id": "uni-mail",
+  "name": "uni-mail",
+  "description": "Mail tools from the uni-mail daemon, scoped per agent, agent runs for new mail, and a Mail page in the Control UI.",
+  "categories": ["inbox-collaboration"],
+  "activation": { "onStartup": true },
+  "controlUi": {
+    "entry": "dist/control-ui/mail-page.js",
+    "styles": ["dist/control-ui/mail-page.css"]
+  },
+  "uiCapabilities": ["page", "navigation"],
+  "contracts": {
+    "tools": [
+      "mail_status",
+      "mail_list",
+      "mail_search",
+      "mail_show",
+      "mail_folders",
+      "mail_attachments",
+      "mail_notes",
+      "mail_export_attachment",
+      "mail_mark_read",
+      "mail_mark_unread",
+      "mail_archive",
+      "mail_trash",
+      "mail_note",
+      "mail_send",
+      "mail_forward"
+    ]
+  },
+  "uiHints": {
+    "access": {
+      "label": "Agent access",
+      "help": "One entry per agent id (or * for every agent not listed). An agent without an entry gets no mail tools."
+    },
+    "access.*.accounts": {
+      "label": "Accounts",
+      "help": "The mail accounts this agent sees. Empty means every account."
+    },
+    "access.*.actions": {
+      "label": "Actions",
+      "help": "read: list, search, show, notes. mark: read/unread. archive, trash: move mail. export: save an attachment in the agent's workspace. note: record a decision on a mail."
+    },
+    "access.*.send": {
+      "label": "Send",
+      "help": "Lets the agent send plain text mail from one account to these addresses only (an address, or @domain)."
+    },
+    "access.*.forward": {
+      "label": "Forward",
+      "help": "Lets the agent forward mail of its accounts, from one account, to these addresses only."
+    },
+    "rules": {
+      "label": "New mail rules",
+      "help": "Each matching event starts one fresh run of the agent. The message names only the account, the mail ID and the event ID; the agent reads the mail with its tools."
+    },
+    "rules.*.message": {
+      "label": "Message",
+      "help": "Placeholders: {account}, {mail_id}, {event_id}, {event_type}, {detail}.",
+      "advanced": true
+    },
+    "socket": {
+      "label": "Daemon socket",
+      "help": "Empty: $UNI_MAIL_SOCKET, the socket in ~/.config/uni-mail/config.json, or /run/uni-mail/mail.sock.",
+      "advanced": true
+    }
+  },
+  "configGroups": [
+    { "id": "access", "title": "Agent access", "order": 10, "properties": ["access"] },
+    { "id": "rules", "title": "New mail", "order": 20, "properties": ["rules"] },
+    { "id": "daemon", "title": "Daemon", "order": 30, "properties": ["socket"] }
+  ],
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "$defs": {
+      "outbound": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": { "type": "string", "minLength": 1, "description": "The account that sends." },
+          "to": { "type": "array", "items": { "type": "string", "minLength": 1 }, "description": "Allowed recipients: an address, or @domain." },
+          "perHour": { "type": "integer", "minimum": 1, "maximum": 100, "default": 10 }
+        },
+        "required": ["from", "to"]
+      }
+    },
+    "properties": {
+      "socket": { "type": "string" },
+      "access": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "accounts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "actions": {
+              "type": "array",
+              "items": { "type": "string", "enum": ["read", "mark", "archive", "trash", "export", "note"] },
+              "default": ["read"]
+            },
+            "send": { "$ref": "#/$defs/outbound" },
+            "forward": { "$ref": "#/$defs/outbound" }
+          }
+        }
+      },
+      "rules": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "agent": { "type": "string", "minLength": 1 },
+            "accounts": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+            "events": { "type": "array", "items": { "type": "string", "minLength": 1 }, "default": ["mail.new"] },
+            "message": { "type": "string" },
+            "timeoutSeconds": { "type": "integer", "minimum": 30, "maximum": 3600, "default": 900 },
+            "enabled": { "type": "boolean", "default": true }
+          },
+          "required": ["agent"]
+        }
+      }
+    }
+  }
+}

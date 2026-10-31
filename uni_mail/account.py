@@ -406,7 +406,16 @@ class MailAccount:
         return self._with_action(operation)
 
     def archive(self, records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-        """Move messages to the account's archive folder. Return a result for each mail ID.
+        """Move messages to the account's archive folder. Return a result for each mail ID."""
+        return self._move(records, self.cfg.archive_folder, "archive")
+
+    def trash(self, records: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        """Move messages to the account's trash folder, which the provider empties later (Gmail and
+        Outlook after about 30 days). Never a permanent delete. Return a result for each mail ID."""
+        return self._move(records, self.cfg.trash_folder, "trash")
+
+    def _move(self, records: list[dict[str, Any]], destination: str, kind: str) -> dict[str, dict[str, Any]]:
+        """Move messages to `destination`, the account's `kind` folder (archive or trash).
 
         Uses UID MOVE (RFC 6851) when the server offers it, which is one
         atomic command; Gmail and Office365 both support it. Otherwise it
@@ -417,10 +426,9 @@ class MailAccount:
         local index; the next sync of the destination folder indexes it
         again only if that folder is itself configured to sync.
         """
-        destination = self.cfg.archive_folder
         if not destination:
             return {
-                record["id"]: {"ok": False, "error": "no archive folder is configured for this account"}
+                record["id"]: {"ok": False, "error": f"no {kind} folder is configured for this account"}
                 for record in records
             }
         by_folder: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -433,7 +441,7 @@ class MailAccount:
                 folder = group[0]["folder"]
                 if folder == destination:
                     for record in group:
-                        results[record["id"]] = {"ok": False, "error": "the message is already in the archive folder"}
+                        results[record["id"]] = {"ok": False, "error": f"the message is already in the {kind} folder"}
                     continue
                 self._open(imap, group[0], writable=True)
                 uid_set = compact_set([record["uid"] for record in group])
@@ -445,7 +453,7 @@ class MailAccount:
                         _check(imap.uid("STORE", uid_set, "+FLAGS.SILENT", "(\\Deleted)"), "STORE")
                         _check(imap.uid("EXPUNGE", uid_set), "UID EXPUNGE")
                     else:
-                        raise MailError(f"the server supports neither MOVE nor UIDPLUS; cannot archive to {destination}")
+                        raise MailError(f"the server supports neither MOVE nor UIDPLUS; cannot move to {destination}")
                 finally:
                     _leave(imap, folder)
                 ids = [record["id"] for record in group]
@@ -474,6 +482,23 @@ class MailAccount:
 
         raw = self._with_action(operation)
         return mime.decode_transfer(raw, part.encoding, partial=bool(limit) and part.size > (limit or 0))
+
+    def fetch_message(self, record: dict[str, Any]) -> bytes:
+        """The whole raw message. BODY.PEEK[] leaves the read state and every other flag as they are."""
+        max_bytes = self.cfg.max_part_mb * 1024 * 1024
+        if record["size"] > max_bytes:
+            raise MailError(f"the message is {record['size'] // 1048576} MiB; the limit is {self.cfg.max_part_mb} MiB")
+
+        def operation(imap: imaplib.IMAP4) -> bytes:
+            self._open(imap, record, writable=False)
+            data = _check(imap.uid("FETCH", str(record["uid"]), "(BODY.PEEK[])"), "FETCH message")
+            responses = parse_fetch(data)
+            if not responses:
+                raise MailError("the message is no longer on the server")
+            raw = section(responses[0], "BODY[]")
+            return raw if isinstance(raw, bytes) else str(raw or "").encode()
+
+        return self._with_action(operation)
 
     def body(self, record: dict[str, Any]) -> str:
         cached = self.store.read_cache(record["id"], "body.txt")

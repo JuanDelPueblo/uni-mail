@@ -197,6 +197,40 @@ class ServiceTest(unittest.TestCase):
         self.assertGreater(second["seq"], first["seq"])
         self.assertEqual(service.store.prune_events(0), 0)
 
+    def test_notes_on_messages(self):
+        service = self.start()
+        exam, homework = [m["id"] for m in self.call(service, op="list")["messages"][1:3]]
+        first = self.call(service, op="note", id=exam, text="  kept unread: the exam moved  ", author="mail-triage")["note"]
+        self.assertEqual((first["mail_id"], first["account"], first["author"], first["text"]),
+                         (exam, "uni", "mail-triage", "kept unread: the exam moved"))
+        self.call(service, op="note", id=homework, text="archived")
+        newest_first = self.call(service, op="notes")["notes"]
+        self.assertEqual([note["text"] for note in newest_first], ["archived", "kept unread: the exam moved"])
+        self.assertEqual([note["text"] for note in self.call(service, op="notes", id=exam)["notes"]],
+                         ["kept unread: the exam moved"])
+        self.assertEqual(self.call(service, op="notes", accounts=["other"])["count"], 0)
+        self.assertEqual(self.call(service, op="notes", accounts="uni", limit=1)["count"], 1)
+        # A note outlives its message in the index, and one can be added after the message
+        # left it (archiving removes it); old notes are pruned.
+        service.store.remove([exam])
+        self.assertEqual(self.call(service, op="notes", id=exam)["count"], 1)
+        self.call(service, op="note", id=exam, text="archived after all")
+        self.assertEqual(self.call(service, op="notes", id=exam)["count"], 2)
+        service.store._write("DELETE FROM notes WHERE text=?", ("archived after all",))
+        service.store._write("UPDATE notes SET created=? WHERE mail_id=?", (time.time() - 100 * 86400, exam))
+        self.assertEqual(self.call(service, op="notes", since="30d")["count"], 1)
+        self.assertEqual(service.store.prune_notes(90), 1)
+        self.assertEqual(self.call(service, op="notes")["count"], 1)
+
+    def test_notes_refuse_bad_input(self):
+        service = self.start()
+        mail = self.call(service, op="list")["messages"][0]["id"]
+        for request in ({"id": "other.0000000000000000", "text": "x"}, {"id": "uni.nothex", "text": "x"},
+                        {"id": mail, "text": "  "},
+                        {"id": mail, "text": "x" * 2001}, {"id": mail, "text": "x", "author": "a\nb"}):
+            self.assertFalse(service.handle({"op": "note", **request})["ok"], request)
+        self.assertFalse(service.handle({"op": "notes", "accounts": [1]})["ok"])
+
     def test_refresh_token_rotation_is_saved(self):
         service = self.start()
         token_file = self.root / "state" / "tokens" / "uni.json"
@@ -305,6 +339,25 @@ class ServiceTest(unittest.TestCase):
         self.assertIsNone(service.store.get(homework["id"]))
         self.assertNotIn(2, {m.uid for m in self.box.messages})
         self.assertIn(2, {m.uid for m in self.box.folders["Archive"]})
+
+    def test_trash_moves_the_message_to_the_trash_folder(self):
+        service = self.start(trash_folder="Trash")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        before = len(self.box.commands)
+        result = self.call(service, op="trash", ids=[homework["id"]])
+        self.assertEqual(result["results"][homework["id"]], {"ok": True, "folder": "Trash"})
+        commands = [command.split(" ", 1)[1].upper() for command in self.box.commands[before:]]
+        self.assertTrue(any(command.startswith("UID MOVE") for command in commands))
+        self.assertFalse(any(command.startswith(("UID STORE", "UID EXPUNGE", "CLOSE", "EXPUNGE")) for command in commands))
+        self.assertIsNone(service.store.get(homework["id"]))
+        self.assertIn(2, {m.uid for m in self.box.folders["Trash"]})
+
+    def test_trash_already_in_the_trash_folder_is_refused(self):
+        service = self.start(trash_folder="INBOX")
+        homework = self.call(service, op="list", query="Homework")["messages"][0]
+        response = service.handle({"op": "trash", "ids": [homework["id"]]})
+        self.assertFalse(response["ok"])
+        self.assertIn("already in the trash folder", response["error"])
 
     def test_archive_falls_back_to_copy_store_expunge_without_move(self):
         self.box.capabilities = "IMAP4rev1 IDLE UIDPLUS UNSELECT AUTH=XOAUTH2 AUTH=PLAIN"
@@ -514,6 +567,7 @@ class ServiceTest(unittest.TestCase):
         client = Client(str(self.root / "mail.sock"))
         status = client.status()["accounts"][0]
         self.assertEqual((status["name"], status["status"], status["messages"], status["unread"]), ("uni", "idle", 3, 2))
+        self.assertEqual(status["auth"], "oauth")
         self.assertEqual(client.list(unread=True)["count"], 2)
         self.assertEqual(client.list(since="2d")["count"], 2)
         with self.assertRaises(MailServiceError) as raised:

@@ -1,0 +1,14 @@
+{
+  "name": "@uni-mail/openclaw",
+  "version": "0.3.0",
+  "private": true,
+  "description": "uni-mail for OpenClaw: mail tools scoped per agent, and agent runs for new mail",
+  "type": "module",
+  "openclaw": {
+    "extensions": ["./index.ts"],
+    "compat": {
+      "pluginApi": ">=2026.10.6",
+      "minGatewayVersion": "2026.10.6"
+    }
+  }
+}

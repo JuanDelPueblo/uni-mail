@@ -16,6 +16,7 @@ gets an event, reads the mail through MCP, and decides what to do.
 | `deploy/` | systemd units (system services, and user services in `deploy/user/`), sysusers, tmpfiles and a config example. |
 | `Containerfile`, `deploy/podman/` | A container image and rootless Podman Quadlet units. |
 | `integrations/nanobot/` | Optional examples: a command that runs `nanobot trigger`, and a webhook receiver. |
+| `integrations/openclaw/` | An OpenClaw plugin: mail tools scoped per agent, and an agent run for each new mail. |
 | `integrations/hermes/` | Optional example: Hermes Agent with the MCP tools and a webhook route. |
 
 The daemon and the dispatcher use only the Python standard library (Python
@@ -42,6 +43,21 @@ token in its state directory with mode 0600; it saves a rotated refresh token
 at once. It never reads the tokens of another mail client and never returns a
 token on the socket. The Microsoft sign-in logs show the app as Mozilla
 Thunderbird.
+
+## Sending
+
+`uni-mail send` sends from any signed-in OAuth account over SMTP with XOAUTH2
+(`smtp.gmail.com`, `smtp.office365.com`, port 587 with STARTTLS), using the
+stored refresh token. Gmail works with the existing sign-in. Microsoft
+accounts need the `SMTP.Send` scope: run `uni-mail auth login <account> --send`
+once. Both providers keep a copy in the Sent folder themselves. Password
+accounts cannot send. `uni-mail send` has no attachments.
+
+`uni-mail forward <mail-id> --account <sender> --to <addr>` forwards one indexed
+message, with its attachments, as a new message from the sender account. The
+original is read with `BODY.PEEK[]`, so it stays unread. Replies go to the
+original sender (Reply-To). The same mail is not forwarded to the same address
+twice unless you add `--force`.
 
 ## What the daemon downloads
 
@@ -75,8 +91,14 @@ uni-mail export-attachment <mail-id> <index>
 uni-mail mark-read <mail-id> [<mail-id> ...]
 uni-mail mark-unread <mail-id> [<mail-id> ...]
 uni-mail archive <mail-id> [<mail-id> ...]
+uni-mail trash <mail-id> [<mail-id> ...]
+uni-mail note <mail-id> "kept unread: exam moved" [--author <name>]
+uni-mail notes [--mail-id <id>] [--account <name>] [--since 7d]
+uni-mail send --account <name> --to <addr> --subject <text> (--body <text> | --body-file <path|->) [--cc <addr>] [--bcc <addr>] [--html] [--reply-to-message <mail-id>]
+uni-mail forward <mail-id> --account <sender> --to <addr> [--to <addr>] [--note <text>] [--force]
+uni-mail send-check <account>        # sign in to SMTP, send nothing
 uni-mail events [--after N]
-uni-mail auth login <account>
+uni-mail auth login <account> [--send]
 uni-mail account list | set <name> '<json>' [--password-stdin] | remove <name> | reset <name>
 ```
 
@@ -96,6 +118,10 @@ with its own queue, retries and acknowledgement:
 - **webhook**: a signed HTTPS POST (HMAC-SHA256, also as a Standard Webhooks
   signature); a 2xx answer acknowledges.
 
+OpenClaw needs no destination: its plugin
+([integrations/openclaw](integrations/openclaw/README.md)) reads the event log
+itself.
+
 ```json
 "dispatch": {
   "destinations": {
@@ -113,14 +139,23 @@ uni-mail dispatch list [--status dead] | show <id> | retry <id> | test <destinat
 Delivery is at least once: deduplicate on `event_id`. See
 [docs/EVENTS.md](docs/EVENTS.md).
 
+Notes record what an agent or a person decided about a message. They stay
+after the message leaves the sync window and are deleted after
+`note_retention_days` (default 90; 0 keeps them).
+
 ## MCP
 
 `uni-mail-mcp` (install with `pip install 'uni-mail[mcp]'`) serves these
 tools over stdio, or over Streamable HTTP with a bearer token:
 `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`,
 `mail_attachments`, `mail_export_attachment`, `mail_mark_read`,
-`mail_mark_unread`, `mail_archive`. It cannot sign in, change accounts or
-destinations, or run commands. A Nanobot config:
+`mail_mark_unread`, `mail_archive`, `mail_trash` (to the account's trash folder, which the
+provider empties after about 30 days). It cannot sign in, change accounts or
+destinations, or run commands. `--account` limits a server to some accounts and
+`--read-only` leaves out the tools that change mail. The tools `mail_send` and `mail_forward` exist
+only when you start the server with `--enable-send`, and then send only to the
+addresses of `--send-allow` (none by default); `mail_forward` also needs
+`--send-account`; see [docs/INSTALL.md](docs/INSTALL.md). A Nanobot config:
 
 ```json
 {"tools": {"mcpServers": {"uni-mail": {"command": "/opt/uni-mail/bin/uni-mail-mcp", "toolTimeout": 60}}}}
@@ -132,6 +167,7 @@ destinations, or run commands. A Nanobot config:
 python3.14 -m venv .venv && .venv/bin/pip install -e '.[mcp]' ruff
 make test PYTHON=.venv/bin/python   # all tests; the MCP tests skip without the mcp package
 make lint
+make test-openclaw                  # the OpenClaw plugin, with Node 24 or newer
 ```
 
 The tests use an in-process fake IMAP server that records every command. They

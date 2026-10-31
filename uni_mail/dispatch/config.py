@@ -30,6 +30,7 @@ DEFAULT_STATE_DIR = "/var/lib/uni-mail-dispatch"
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,31}")
 ENV_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
 KINDS = ("command", "webhook")
+HTTP_KINDS = ("webhook",)
 # sysexits EX_USAGE and EX_DATAERR: the command says that a retry cannot help.
 DEFAULT_PERMANENT_EXIT_CODES = (64, 65)
 
@@ -139,13 +140,15 @@ def parse_destination(name: str, raw: Any, retry: Retry) -> Destination:
     _require(bool(NAME.fullmatch(name)), f"destination name {name!r} must match {NAME.pattern}")
     _require(isinstance(raw, dict), f"{what} must be an object")
     kind = raw.get("type")
+    _require(kind != "openclaw", f"{what}: the openclaw destination was removed; the OpenClaw plugin in "
+                                 "integrations/openclaw reads the events itself")
     _require(kind in KINDS, f"{what}.type must be one of {', '.join(KINDS)}")
     known = {"type", "events", "accounts", "enabled", "timeout_seconds", "retry"}
     known |= {"argv", "env", "working_directory", "permanent_exit_codes"} if kind == "command" else \
         {"url", "secret_file", "secret_env", "allow_private_network", "allow_http"}
     unknown = sorted(set(raw) - known)
     _require(not unknown, f"{what}: unknown key(s) {', '.join(unknown)} for a {kind} destination")
-    timeout = float(raw.get("timeout_seconds", 60 if kind == "command" else 15))
+    timeout = float(raw.get("timeout_seconds", {"command": 60}.get(kind, 15)))
     _require(1 <= timeout <= 3600, f"{what}.timeout_seconds must be 1 to 3600")
     common: dict[str, Any] = {
         "name": name,

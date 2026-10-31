@@ -96,6 +96,9 @@ class Client:
     def archive(self, mail_ids: List[str]) -> Dict[str, Any]:
         return self.request({"op": "archive", "ids": list(mail_ids)})
 
+    def trash(self, mail_ids: List[str]) -> Dict[str, Any]:
+        return self.request({"op": "trash", "ids": list(mail_ids)})
+
     def events(self, after: int = 0, timeout: float = 0, limit: int = 100) -> Dict[str, Any]:
         """The events after the sequence number `after`, and the head of the log."""
         return self.request({"op": "events", "after": after, "timeout": timeout, "limit": limit}, timeout=timeout + 30)
@@ -106,8 +109,46 @@ class Client:
     def events_consumed(self, upto: int) -> int:
         return self.request({"op": "events_consumed", "upto": int(upto)})["consumed"]
 
-    def auth_begin(self, account: str) -> Dict[str, Any]:
-        return self.request({"op": "auth_begin", "account": account})
+    def note(self, mail_id: str, text: str, author: str = "") -> Dict[str, Any]:
+        return self.request({"op": "note", "id": mail_id, "text": text, "author": author})["note"]
+
+    def notes(self, mail_id: str = "", accounts: Optional[List[str]] = None, since: str = "", limit: int = 100) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"op": "notes", "limit": limit}
+        if mail_id:
+            payload["id"] = mail_id
+        if accounts:
+            payload["accounts"] = list(accounts)
+        if since:
+            payload["since"] = since
+        return self.request(payload)
+
+    def auth_begin(self, account: str, send: bool = False) -> Dict[str, Any]:
+        return self.request({"op": "auth_begin", "account": account, **({"send": True} if send else {})})
+
+    def send(self, account: str, to: List[str], subject: str, body: str, cc: Optional[List[str]] = None,
+             bcc: Optional[List[str]] = None, html: bool = False, reply_to: str = "") -> Dict[str, Any]:
+        """Send a message from an account. Sending can take a while, so the timeout is longer."""
+        payload: Dict[str, Any] = {"op": "send", "account": account, "to": list(to), "subject": subject, "body": body}
+        for key, value in (("cc", cc), ("bcc", bcc)):
+            if value:
+                payload[key] = list(value)
+        if html:
+            payload["html"] = True
+        if reply_to:
+            payload["reply_to"] = reply_to
+        return self.request(payload, timeout=180)
+
+    def forward(self, mail_id: str, account: str, to: List[str], note: str = "", force: bool = False) -> Dict[str, Any]:
+        """Forward an indexed message as a new message sent from an account."""
+        payload: Dict[str, Any] = {"op": "forward", "id": mail_id, "account": account, "to": list(to)}
+        if note:
+            payload["note"] = note
+        if force:
+            payload["force"] = True
+        return self.request(payload, timeout=180)
+
+    def send_check(self, account: str) -> Dict[str, Any]:
+        return self.request({"op": "send_check", "account": account}, timeout=120)
 
     def auth_finish(self, account: str, redirect: str) -> Dict[str, Any]:
         return self.request({"op": "auth_finish", "account": account, "redirect": redirect})

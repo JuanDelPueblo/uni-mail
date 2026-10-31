@@ -128,17 +128,27 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
       abortSignal: signal,
     });
     const cursors = api.runtime.state.openKeyedStore({ namespace: "cursor", retention: "retained" });
-    await drain.recoverStaleClaims();
-    let cursor: number | undefined = (await cursors.lookup(CURSOR_KEY))?.seq;
+    let cursor: number | undefined;
+    let started = false;
+    let followed = false;
     try {
       while (!signal.aborted) {
         try {
+          if (!started) {
+            await drain.recoverStaleClaims();
+            cursor = (await cursors.lookup(CURSOR_KEY))?.seq;
+            started = true;
+          }
           if (cursor === undefined) {
             // The first start takes over from the first event that nothing has consumed yet
             // (a dispatcher that ran before), else from the newest event.
             const head = await client().request({ op: "event_head" });
             cursor = head.first_pending ? Number(head.first_pending) - 1 : Number(head.last ?? 0);
             await cursors.register(CURSOR_KEY, { seq: cursor });
+          }
+          if (!followed) {
+            logger.info(`uni-mail: following events after ${cursor} for ${rules().map((rule) => rule.agent).join(", ")}`);
+            followed = true;
           }
           const page = await client().request({ op: "events", after: cursor, timeout: POLL_SECONDS, limit: 100 }, (POLL_SECONDS + 30) * 1000);
           const current = rules();
@@ -154,13 +164,18 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
           }
           await drain.drainOnce({ shouldStop: () => signal.aborted });
         } catch (error: any) {
-          if (signal.aborted) break;
+          // A config reload replaces this plugin's runtime: the old loop ends quietly.
+          if (signal.aborted || /no longer active/.test(String(error?.message))) break;
           logger.warn(`uni-mail: ${error?.message ?? error}; trying again in ${ERROR_PAUSE_MS / 1000} s`);
           await sleep(ERROR_PAUSE_MS, signal);
         }
       }
     } finally {
-      drain.dispose();
+      try {
+        drain.dispose();
+      } catch {
+        // The runtime may already be gone.
+      }
     }
   }
 
@@ -176,7 +191,10 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
       }
       stop = new AbortController();
       context.scheduler?.signal?.addEventListener("abort", () => stop?.abort(), { once: true });
-      loop = follow(stop.signal, context.logger);
+      // Never let the loop reject: an unhandled rejection stops the whole gateway.
+      loop = follow(stop.signal, context.logger).catch((error: any) => {
+        if (!/no longer active/.test(String(error?.message))) context.logger.warn(`uni-mail: stopped following: ${error?.stack ?? error}`);
+      });
     },
     async stop() {
       stop?.abort();

@@ -16,6 +16,7 @@ import fcntl
 import json
 import logging
 import os
+import re
 import signal
 import socket
 import socketserver
@@ -35,6 +36,7 @@ log = logging.getLogger("uni_mail")
 REQUEST_LIMIT = 1024 * 1024
 MAX_WAIT = 300
 MAX_NOTE_CHARS = 2000
+MAIL_DIGEST = re.compile(r"[0-9a-f]{16}")
 # The socket of a hermes-mail daemon. uni-maild does not start while one
 # answers there, so the two never sync the same accounts side by side.
 LEGACY_SOCKET = Path("/run/hermes-mail/mail.sock")
@@ -350,8 +352,16 @@ class Service:
         return {"consumed": count}
 
     def op_note(self, request: dict[str, Any]) -> dict[str, Any]:
-        """Keep a note on an indexed message: what an agent or a person decided about it."""
-        record = self._record(request.get("id"))
+        """Keep a note on a message: what an agent or a person decided about it. The message may
+        have left the index already (archiving removes it), so a well-formed ID of a known
+        account is enough."""
+        identifier = str(request.get("id") or "").strip()
+        record = self.store.get(identifier)
+        if record is None:
+            account, _, digest = identifier.partition(".")
+            if account not in self.accounts or not MAIL_DIGEST.fullmatch(digest):
+                raise RequestError(f"message not found: {identifier} (not a mail ID of a known account)")
+            record = {"id": identifier, "account": account}
         text = request.get("text")
         if not isinstance(text, str) or not text.strip():
             raise RequestError("text must be non-empty text")

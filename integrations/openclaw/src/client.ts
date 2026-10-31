@@ -47,8 +47,10 @@ export class MailClient {
     this.timeoutMs = timeoutMs;
   }
 
-  request(payload: Record<string, unknown>, timeoutMs = this.timeoutMs): Promise<MailResponse> {
+  /** One request. An aborted `signal` closes the connection and rejects. */
+  request(payload: Record<string, unknown>, timeoutMs = this.timeoutMs, signal?: AbortSignal): Promise<MailResponse> {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) return reject(new MailError("the request was cancelled"));
       const connection = net.createConnection(this.socketPath);
       const chunks: Buffer[] = [];
       let total = 0;
@@ -57,6 +59,7 @@ export class MailClient {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
+        signal?.removeEventListener("abort", cancel);
         connection.destroy();
         if (error) reject(error);
         else resolve(value!);
@@ -65,6 +68,8 @@ export class MailClient {
         () => finish(new MailError(`the mail service did not answer in ${Math.round(timeoutMs / 1000)} s`)),
         timeoutMs,
       );
+      const cancel = () => finish(new MailError("the request was cancelled"));
+      signal?.addEventListener("abort", cancel, { once: true });
       connection.on("connect", () => connection.write(`${JSON.stringify(payload)}\n`));
       connection.on("data", (chunk: Buffer) => {
         chunks.push(chunk);

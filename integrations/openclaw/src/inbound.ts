@@ -150,7 +150,7 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
             logger.info(`uni-mail: following events after ${cursor} for ${rules().map((rule) => rule.agent).join(", ")}`);
             followed = true;
           }
-          const page = await client().request({ op: "events", after: cursor, timeout: POLL_SECONDS, limit: 100 }, (POLL_SECONDS + 30) * 1000);
+          const page = await client().request({ op: "events", after: cursor, timeout: POLL_SECONDS, limit: 100 }, (POLL_SECONDS + 30) * 1000, signal);
           const current = rules();
           for (const event of page.events ?? []) {
             for (const delivery of deliveriesFor(event, current)) {

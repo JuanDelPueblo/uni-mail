@@ -210,9 +210,13 @@ class ServiceTest(unittest.TestCase):
                          ["kept unread: the exam moved"])
         self.assertEqual(self.call(service, op="notes", accounts=["other"])["count"], 0)
         self.assertEqual(self.call(service, op="notes", accounts="uni", limit=1)["count"], 1)
-        # A note outlives its message in the index; old notes are pruned.
+        # A note outlives its message in the index, and one can be added after the message
+        # left it (archiving removes it); old notes are pruned.
         service.store.remove([exam])
         self.assertEqual(self.call(service, op="notes", id=exam)["count"], 1)
+        self.call(service, op="note", id=exam, text="archived after all")
+        self.assertEqual(self.call(service, op="notes", id=exam)["count"], 2)
+        service.store._write("DELETE FROM notes WHERE text=?", ("archived after all",))
         service.store._write("UPDATE notes SET created=? WHERE mail_id=?", (time.time() - 100 * 86400, exam))
         self.assertEqual(self.call(service, op="notes", since="30d")["count"], 1)
         self.assertEqual(service.store.prune_notes(90), 1)
@@ -221,7 +225,8 @@ class ServiceTest(unittest.TestCase):
     def test_notes_refuse_bad_input(self):
         service = self.start()
         mail = self.call(service, op="list")["messages"][0]["id"]
-        for request in ({"id": "uni.0000000000000000", "text": "x"}, {"id": mail, "text": "  "},
+        for request in ({"id": "other.0000000000000000", "text": "x"}, {"id": "uni.nothex", "text": "x"},
+                        {"id": mail, "text": "  "},
                         {"id": mail, "text": "x" * 2001}, {"id": mail, "text": "x", "author": "a\nb"}):
             self.assertFalse(service.handle({"op": "note", **request})["ok"], request)
         self.assertFalse(service.handle({"op": "notes", "accounts": [1]})["ok"])

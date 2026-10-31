@@ -14,19 +14,23 @@ import { mailTools } from "../src/tools.ts";
 
 const quiet = { info() {}, warn() {} };
 
-/** A fake uni-maild: answers each request with handler(request), and records the requests. */
+/** A fake uni-maild: answers each request with handler(request) (no answer when it returns undefined), and records the requests. */
 async function fakeDaemon(handler: (request: any) => any) {
   const dir = await mkdtemp(path.join(os.tmpdir(), "uni-mail-plugin-"));
   const socket = path.join(dir, "mail.sock");
   const requests: any[] = [];
+  const connections = new Set<net.Socket>();
   const server = net.createServer((connection) => {
+    connections.add(connection);
+    connection.on("close", () => connections.delete(connection));
     let buffer = "";
     connection.on("data", (chunk) => {
       buffer += chunk;
       if (!buffer.endsWith("\n")) return;
       const request = JSON.parse(buffer);
       requests.push(request);
-      connection.end(`${JSON.stringify(handler(request))}\n`);
+      const response = handler(request);
+      if (response !== undefined) connection.end(`${JSON.stringify(response)}\n`);
     });
   });
   await new Promise<void>((resolve) => server.listen(socket, resolve));
@@ -35,6 +39,7 @@ async function fakeDaemon(handler: (request: any) => any) {
     dir,
     requests,
     close: async () => {
+      for (const connection of connections) connection.destroy();
       await new Promise((resolve) => server.close(resolve));
       await rm(dir, { recursive: true, force: true });
     },
@@ -158,6 +163,15 @@ describe("tools against a fake daemon", () => {
     assert.equal(saved.path, path.join("mail-attachments", "gmail.1", "report.pdf"));
     assert.equal(await readFile(path.join(workspace, saved.path), "utf8"), "pdf");
     await rm(workspace, { recursive: true, force: true });
+  });
+
+  test("an aborted request closes at once", async () => {
+    const slow = await fakeDaemon(() => undefined);
+    const controller = new AbortController();
+    const pending = new MailClient(slow.socket).request({ op: "events" }, 60_000, controller.signal);
+    setTimeout(() => controller.abort(), 20);
+    await assert.rejects(pending, /cancelled/);
+    await slow.close();
   });
 
   test("a refusal of the daemon becomes the tool error", async () => {

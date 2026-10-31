@@ -109,6 +109,19 @@ class Client:
     def events_consumed(self, upto: int) -> int:
         return self.request({"op": "events_consumed", "upto": int(upto)})["consumed"]
 
+    def note(self, mail_id: str, text: str, author: str = "") -> Dict[str, Any]:
+        return self.request({"op": "note", "id": mail_id, "text": text, "author": author})["note"]
+
+    def notes(self, mail_id: str = "", accounts: Optional[List[str]] = None, since: str = "", limit: int = 100) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"op": "notes", "limit": limit}
+        if mail_id:
+            payload["id"] = mail_id
+        if accounts:
+            payload["accounts"] = list(accounts)
+        if since:
+            payload["since"] = since
+        return self.request(payload)
+
     def auth_begin(self, account: str, send: bool = False) -> Dict[str, Any]:
         return self.request({"op": "auth_begin", "account": account, **({"send": True} if send else {})})
 

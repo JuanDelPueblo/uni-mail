@@ -61,6 +61,8 @@ class Config:
     web_settings: bool = True
     # Days to keep the event log. 0 keeps it for ever.
     event_retention_days: int = 14
+    # Days to keep the notes on messages. 0 keeps them for ever.
+    note_retention_days: int = 90
 
 
 def _require(condition: bool, message: str) -> None:
@@ -114,6 +116,8 @@ def parse(raw: dict[str, Any]) -> Config:
         log.warning("triage_retention_days was removed and is ignored; the triage log is no longer written")
     retention = int(raw.get("event_retention_days", 14))
     _require(0 <= retention <= 3650, "event_retention_days must be 0 to 3650")
+    note_retention = int(raw.get("note_retention_days", 90))
+    _require(0 <= note_retention <= 3650, "note_retention_days must be 0 to 3650")
     return Config(
         state_dir=state_dir,
         socket=Path(raw.get("socket") or DEFAULT_SOCKET),
@@ -123,6 +127,7 @@ def parse(raw: dict[str, Any]) -> Config:
         base=base,
         web_settings=bool(raw.get("web_settings", True)),
         event_retention_days=retention,
+        note_retention_days=note_retention,
     )
 
 

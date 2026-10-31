@@ -97,6 +97,15 @@ def parser() -> argparse.ArgumentParser:
     check = sub.add_parser("send-check", help="sign in to the SMTP server of an account without sending anything")
     check.add_argument("account")
 
+    note = sub.add_parser("note", help="keep a note on a message (what was decided about it)")
+    note.add_argument("mail_id")
+    note.add_argument("text")
+    note.add_argument("--author", default="", help="who decided (default: empty)")
+    notes = sub.add_parser("notes", help="show the notes on messages, newest first")
+    notes.add_argument("--mail-id", default="", help="only the notes of this message")
+    notes.add_argument("--account", action="append", default=[], help="only this account (repeatable)")
+    notes.add_argument("--since", default="", help="2d, 12h, yesterday or an ISO date")
+    notes.add_argument("--limit", type=int, default=100)
     events = sub.add_parser("events", help="show the daemon's event log")
     events.add_argument("--after", type=int, default=0, help="only the events after this sequence number")
     events.add_argument("--limit", type=int, default=100)
@@ -206,7 +215,7 @@ def run_dispatch(args: argparse.Namespace) -> Any:
     if command == "check":
         problems = {}
         for name, destination in dispatch_cfg.destinations.items():
-            if destination.kind in ("webhook", "openclaw"):
+            if destination.kind == "webhook":
                 from .dispatch.webhook import standard_key
 
                 try:
@@ -315,6 +324,10 @@ def run(args: argparse.Namespace) -> Any:
         return client.forward(args.mail_id, args.account, args.to, args.note, args.force)
     if command == "send-check":
         return client.send_check(args.account)
+    if command == "note":
+        return client.note(args.mail_id, args.text, args.author)
+    if command == "notes":
+        return client.notes(args.mail_id, args.account, args.since, args.limit)
     if command == "events":
         return client.events(after=args.after, limit=args.limit)
     if command == "auth":

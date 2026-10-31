@@ -16,7 +16,7 @@ gets an event, reads the mail through MCP, and decides what to do.
 | `deploy/` | systemd units (system services, and user services in `deploy/user/`), sysusers, tmpfiles and a config example. |
 | `Containerfile`, `deploy/podman/` | A container image and rootless Podman Quadlet units. |
 | `integrations/nanobot/` | Optional examples: a command that runs `nanobot trigger`, and a webhook receiver. |
-| `integrations/openclaw/` | Optional example: the native `openclaw` destination and the MCP connection. |
+| `integrations/openclaw/` | An OpenClaw plugin: mail tools scoped per agent, and an agent run for each new mail. |
 | `integrations/hermes/` | Optional example: Hermes Agent with the MCP tools and a webhook route. |
 
 The daemon and the dispatcher use only the Python standard library (Python
@@ -91,6 +91,9 @@ uni-mail export-attachment <mail-id> <index>
 uni-mail mark-read <mail-id> [<mail-id> ...]
 uni-mail mark-unread <mail-id> [<mail-id> ...]
 uni-mail archive <mail-id> [<mail-id> ...]
+uni-mail trash <mail-id> [<mail-id> ...]
+uni-mail note <mail-id> "kept unread: exam moved" [--author <name>]
+uni-mail notes [--mail-id <id>] [--account <name>] [--since 7d]
 uni-mail send --account <name> --to <addr> --subject <text> (--body <text> | --body-file <path|->) [--cc <addr>] [--bcc <addr>] [--html] [--reply-to-message <mail-id>]
 uni-mail forward <mail-id> --account <sender> --to <addr> [--to <addr>] [--note <text>] [--force]
 uni-mail send-check <account>        # sign in to SMTP, send nothing
@@ -113,10 +116,11 @@ with its own queue, retries and acknowledgement:
 - **command**: runs a configured program with the event JSON on stdin; exit
   code 0 acknowledges;
 - **webhook**: a signed HTTPS POST (HMAC-SHA256, also as a Standard Webhooks
-  signature); a 2xx answer acknowledges;
-- **openclaw**: one agent turn per event in a shared OpenClaw conversation;
-  acknowledged only when the run has finished
-  ([integrations/openclaw](integrations/openclaw/README.md)).
+  signature); a 2xx answer acknowledges.
+
+OpenClaw needs no destination: its plugin
+([integrations/openclaw](integrations/openclaw/README.md)) reads the event log
+itself.
 
 ```json
 "dispatch": {
@@ -134,6 +138,10 @@ uni-mail dispatch list [--status dead] | show <id> | retry <id> | test <destinat
 
 Delivery is at least once: deduplicate on `event_id`. See
 [docs/EVENTS.md](docs/EVENTS.md).
+
+Notes record what an agent or a person decided about a message. They stay
+after the message leaves the sync window and are deleted after
+`note_retention_days` (default 90; 0 keeps them).
 
 ## MCP
 
@@ -159,6 +167,7 @@ addresses of `--send-allow` (none by default); `mail_forward` also needs
 python3.14 -m venv .venv && .venv/bin/pip install -e '.[mcp]' ruff
 make test PYTHON=.venv/bin/python   # all tests; the MCP tests skip without the mcp package
 make lint
+make test-openclaw                  # the OpenClaw plugin, with Node 24 or newer
 ```
 
 The tests use an in-process fake IMAP server that records every command. They

@@ -197,6 +197,35 @@ class ServiceTest(unittest.TestCase):
         self.assertGreater(second["seq"], first["seq"])
         self.assertEqual(service.store.prune_events(0), 0)
 
+    def test_notes_on_messages(self):
+        service = self.start()
+        exam, homework = [m["id"] for m in self.call(service, op="list")["messages"][1:3]]
+        first = self.call(service, op="note", id=exam, text="  kept unread: the exam moved  ", author="mail-triage")["note"]
+        self.assertEqual((first["mail_id"], first["account"], first["author"], first["text"]),
+                         (exam, "uni", "mail-triage", "kept unread: the exam moved"))
+        self.call(service, op="note", id=homework, text="archived")
+        newest_first = self.call(service, op="notes")["notes"]
+        self.assertEqual([note["text"] for note in newest_first], ["archived", "kept unread: the exam moved"])
+        self.assertEqual([note["text"] for note in self.call(service, op="notes", id=exam)["notes"]],
+                         ["kept unread: the exam moved"])
+        self.assertEqual(self.call(service, op="notes", accounts=["other"])["count"], 0)
+        self.assertEqual(self.call(service, op="notes", accounts="uni", limit=1)["count"], 1)
+        # A note outlives its message in the index; old notes are pruned.
+        service.store.remove([exam])
+        self.assertEqual(self.call(service, op="notes", id=exam)["count"], 1)
+        service.store._write("UPDATE notes SET created=? WHERE mail_id=?", (time.time() - 100 * 86400, exam))
+        self.assertEqual(self.call(service, op="notes", since="30d")["count"], 1)
+        self.assertEqual(service.store.prune_notes(90), 1)
+        self.assertEqual(self.call(service, op="notes")["count"], 1)
+
+    def test_notes_refuse_bad_input(self):
+        service = self.start()
+        mail = self.call(service, op="list")["messages"][0]["id"]
+        for request in ({"id": "uni.0000000000000000", "text": "x"}, {"id": mail, "text": "  "},
+                        {"id": mail, "text": "x" * 2001}, {"id": mail, "text": "x", "author": "a\nb"}):
+            self.assertFalse(service.handle({"op": "note", **request})["ok"], request)
+        self.assertFalse(service.handle({"op": "notes", "accounts": [1]})["ok"])
+
     def test_refresh_token_rotation_is_saved(self):
         service = self.start()
         token_file = self.root / "state" / "tokens" / "uni.json"

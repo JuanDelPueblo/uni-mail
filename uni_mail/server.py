@@ -34,6 +34,7 @@ log = logging.getLogger("uni_mail")
 
 REQUEST_LIMIT = 1024 * 1024
 MAX_WAIT = 300
+MAX_NOTE_CHARS = 2000
 # The socket of a hermes-mail daemon. uni-maild does not start while one
 # answers there, so the two never sync the same accounts side by side.
 LEGACY_SOCKET = Path("/run/hermes-mail/mail.sock")
@@ -81,6 +82,7 @@ class Service:
         self._reconfigure = threading.Lock()
         self.apply()
         self.store.prune_events(cfg.event_retention_days)
+        self.store.prune_notes(cfg.note_retention_days)
 
     def _configured(self) -> dict[str, config.Account]:
         if self.settings is None:
@@ -346,6 +348,31 @@ class Service:
         count = self.store.consume_events(upto)
         self.store.prune_events(self.cfg.event_retention_days)
         return {"consumed": count}
+
+    def op_note(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Keep a note on an indexed message: what an agent or a person decided about it."""
+        record = self._record(request.get("id"))
+        text = request.get("text")
+        if not isinstance(text, str) or not text.strip():
+            raise RequestError("text must be non-empty text")
+        if len(text) > MAX_NOTE_CHARS:
+            raise RequestError(f"text is longer than {MAX_NOTE_CHARS} characters")
+        author = request.get("author") or ""
+        if not isinstance(author, str) or len(author) > 100 or "\n" in author:
+            raise RequestError("author must be one line of at most 100 characters")
+        self.store.prune_notes(self.cfg.note_retention_days)
+        return {"note": self.store.add_note(record["id"], record["account"], author.strip(), text.strip())}
+
+    def op_notes(self, request: dict[str, Any]) -> dict[str, Any]:
+        """Notes, newest first: of one message (`id`), or of some accounts (`accounts`), since a time."""
+        accounts = request.get("accounts") or []
+        if isinstance(accounts, str):
+            accounts = [accounts]
+        if not isinstance(accounts, list) or not all(isinstance(name, str) for name in accounts):
+            raise RequestError("accounts must be a list of account names")
+        since = datetime.fromisoformat(parse_time(str(request["since"]))).timestamp() if request.get("since") else 0.0
+        notes = self.store.notes(str(request.get("id") or ""), accounts, since, int(request.get("limit") or 100))
+        return {"count": len(notes), "notes": notes}
 
     def op_auth_begin(self, request: dict[str, Any]) -> dict[str, Any]:
         account = self._account(str(request.get("account") or ""))

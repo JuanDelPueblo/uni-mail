@@ -1,139 +1,86 @@
-# OpenClaw
+# OpenClaw plugin
 
-uni-mail delivers each new email to [OpenClaw](https://docs.openclaw.ai/) with
-a native `openclaw` dispatch destination: no trigger script in between. Every
-matching email becomes one agent turn, and the agent reads the mail through the
-uni-mail MCP server. By default each turn is a fresh conversation
-(`sessionMode: "isolated"`), so no email stays in the context of the next one.
-With a `session_key`, every email is a turn in that **same** persistent
-conversation instead.
+An [OpenClaw](https://docs.openclaw.ai/) plugin for uni-mail. It talks to the
+daemon's socket directly: no MCP server, no hook endpoint, no tokens.
 
-uni-mail decides nothing. What is essential and whether to mark mail as read
-belongs to the agent's policy (its instructions in OpenClaw). The request
-message holds only the account, the mail ID and the event ID, plus an
-instruction to fetch the message over MCP and follow that policy; no subject,
-sender or body is ever put in it.
+- **Mail tools, per agent.** One `access` entry per agent id says which
+  accounts the agent sees and what it may do. An agent without an entry gets
+  no mail tools; `*` is the entry of every agent not listed.
+- **New mail starts a run.** Each `rules` entry sends matching events to an
+  agent: one fresh run per event. The message names only the account, the mail
+  ID and the event ID; the agent reads the mail with `mail_show`. The queue is
+  OpenClaw's own ingress queue: it survives restarts, retries a failed run
+  (3 attempts) and keeps the ones that still fail.
+- **Notes.** `mail_note` keeps a decision on a message in the daemon
+  (`uni-mail notes` shows them); `mail_notes` reads them back, so one agent can
+  see what another did with a mail.
 
-Checked against the OpenClaw docs (`automation/cron-jobs/webhooks`,
-`gateway/config-hooks`, `cli/mcp/transports`), October 2026.
+Requires OpenClaw 2026.10.6 or newer and a running `uni-maild` that the
+gateway's user can reach.
 
-## 1. OpenClaw: enable hooks
-
-```json
-{
-  "hooks": {
-    "enabled": true,
-    "path": "/hooks",
-    "token": "<long random value, only for hooks>",
-    "allowedAgentIds": ["mail-triage"]
-  }
-}
-```
-
-Use a token dedicated to hooks, not the gateway token. The agent `mail-triage`
-must exist and carry your triage policy. A destination with a `session_key`
-(a persistent conversation) also needs `allowRequestSessionKey: true` and a
-non-empty `allowedSessionKeyPrefixes` that matches the key.
-
-## 2. OpenClaw: the uni-mail MCP connection
-
-Run uni-mail's own Streamable HTTP server (nothing else to install):
+## Install
 
 ```sh
-openssl rand -hex 32 > ~/.config/uni-mail/secrets/mcp-token && chmod 0600 ~/.config/uni-mail/secrets/mcp-token
-uni-mail-mcp --transport streamable-http --host 127.0.0.1 --port 8765 --token-file ~/.config/uni-mail/secrets/mcp-token \
-  --account university
+openclaw plugins install --link /path/to/uni-mail/integrations/openclaw --force --accept-capabilities
 ```
 
-`--account` (repeat it for more) keeps the triage agent to the accounts it
-triages: it cannot read or archive mail of the others. Give other agents a
-server of their own, `--read-only` if they only need to read.
+Sandboxed agents see plugin tools only when the sandbox tool policy lets them
+through: add `group:plugins` (or the tool names) to
+`tools.sandbox.tools.alsoAllow`. The plugin itself decides which mail tools
+each agent gets.
 
-and point OpenClaw at it (`MCP_TOKEN` set in the gateway's environment):
+## Settings
 
-```json
+Edit them in the Control UI (Plugins → uni-mail → Settings) or under
+`plugins.entries.uni-mail.config`:
+
+```json5
 {
-  "mcp": {
-    "servers": {
-      "uni-mail": {
-        "url": "http://127.0.0.1:8765/mcp",
-        "transport": "streamable-http",
-        "headers": {"Authorization": "Bearer ${MCP_TOKEN}"}
-      }
-    }
-  }
+  access: {
+    // Every account, read only.
+    main: { actions: ["read", "export"] },
+    // One account; may mark read, archive, keep notes, and forward to one address.
+    "mail-triage": {
+      accounts: ["university"],
+      actions: ["read", "mark", "archive", "note"],
+      forward: { from: "gmail", to: ["me@example.com"], perHour: 10 },
+    },
+    // Reads every account and mails the brief to one address.
+    university: { actions: ["read"], send: { from: "gmail", to: ["me@example.com"] } },
+  },
+  rules: [
+    { agent: "mail-triage", accounts: ["university"] },
+    // { agent: "main", events: ["mail.auth", "mail.error"] },  // sign-in and sync trouble
+  ],
 }
 ```
 
-The default path is `/mcp`; `openclaw mcp probe` lists the tools.
-
-## 3. uni-mail: the destination
-
-```sh
-openssl rand -hex 32 > ~/.config/uni-mail/secrets/openclaw   # the same value as hooks.token
-chmod 0600 ~/.config/uni-mail/secrets/openclaw
-```
-
-```json
-"dispatch": {
-  "destinations": {
-    "openclaw": {
-      "type": "openclaw",
-      "url": "http://127.0.0.1:18789/hooks/agent",
-      "secret_file": "/home/you/.config/uni-mail/secrets/openclaw",
-      "agent_id": "mail-triage",
-      "accounts": ["university"],
-      "events": ["mail.new"],
-      "allow_private_network": true,
-      "timeout_seconds": 900
-    }
-  }
-}
-```
-
-`secret_env` (a variable of the dispatcher) replaces `secret_file`. The token
-is read at each attempt. Then `uni-mail dispatch check`, `uni-mail dispatch
-test openclaw` (a synthetic event that does not exist in any mailbox) and a
-restart of `uni-mail-dispatch`.
-
-## What the dispatcher sends
-
-`POST /hooks/agent` with `Authorization: Bearer <token>`, `Idempotency-Key:
-<delivery ID>` (the same for every retry) and
-
-```json
-{"message": "...", "name": "uni-mail", "agentId": "mail-triage", "sessionMode": "isolated",
- "deliver": false, "waitForCompletion": true, "timeoutSeconds": 885}
-```
-
-With a `session_key`, `"sessionMode": "persistent"` and `"sessionKey": "<key>"`
-replace `"sessionMode": "isolated"`.
-
-`timeoutSeconds` is `timeout_seconds` minus 15, so the agent turn ends before
-the request gives up. `deliver: false` keeps OpenClaw from announcing anywhere;
-the agent acts through its own tools.
-
-## Acknowledgement and failures
-
-OpenClaw's `200 {"ok": true, "runId": ...}` means only that the run was
-admitted. With `waitForCompletion` the `200` also has `completion.status`;
-only `"ok"` marks the delivery delivered.
-
-| Result | Delivery |
+| Action | Tools |
 | --- | --- |
-| `200` and `completion.status: "ok"` | delivered |
-| cannot connect; `401`, `403`, `408`, `429`, `502`, `503` (refused before the run was admitted) | retried with the queue's backoff, `Retry-After` honoured |
-| `400`, `404`, `405`, `409`, `413`, other `4xx`, redirects | dead (the request is wrong) |
-| timeout or reset after the request was sent; `200` without a finished `completion`, or with `error`/`skipped`; other `5xx` | **dead**, not retried: the agent may already have read or marked the mail |
+| `read` (default) | `mail_status`, `mail_list`, `mail_search`, `mail_show`, `mail_folders`, `mail_attachments`, `mail_notes` |
+| `mark` | `mail_mark_read`, `mail_mark_unread` |
+| `archive` | `mail_archive` |
+| `trash` | `mail_trash` (the provider empties the trash after about 30 days) |
+| `export` | `mail_export_attachment`: copies the attachment into the agent's workspace |
+| `note` | `mail_note` |
+| `send` entry | `mail_send`: plain text from `from`, only to `to` (addresses, or `@domain`) |
+| `forward` entry | `mail_forward`: from `from`, only to `to`; the same mail never goes to the same address twice |
 
-A dead delivery shows in `uni-mail dispatch list --status dead`. After you
-have checked OpenClaw, `uni-mail dispatch retry <id>` runs it again.
+Rule keys: `agent` (required), `accounts` (default all), `events` (default
+`["mail.new"]`; shell patterns such as `mail.*`), `message` (placeholders
+`{account}`, `{mail_id}`, `{event_id}`, `{event_type}`, `{detail}`),
+`timeoutSeconds` (default 900), `enabled`.
 
-This is not exactly-once. OpenClaw remembers an `Idempotency-Key` only while a
-run is unsettled and for 5 minutes after, and forgets it on a restart; a
-dispatcher crash between the answer and the stored result sends the delivery
-again later with the same key. Make the agent's policy safe to repeat (reading,
-classifying and marking read are), and let it skip an event ID it has seen.
-With a `session_key`, all emails share one conversation, which OpenClaw
-serializes: a long turn delays the next ones, and `timeout_seconds` should cover
-the queue wait.
+A run counts as failed when it errors, times out, or its reply starts with
+`AUTOMATION_FAILED`. The first start follows from the newest event, so mail
+that arrived before the plugin was installed starts no run.
+
+`socket` (advanced) overrides the socket path. By default the plugin uses
+`$UNI_MAIL_SOCKET`, then the `socket` of `~/.config/uni-mail/config.json`, then
+`/run/uni-mail/mail.sock`.
+
+## Tests
+
+```sh
+make test-openclaw   # node --test, Node 24 or newer
+```

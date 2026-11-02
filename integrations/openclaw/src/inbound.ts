@@ -92,39 +92,43 @@ const sleep = (ms: number, signal: AbortSignal) =>
     }, { once: true });
   });
 
+/**
+ * One agent run for a queued delivery. `waitForRun` answers `timeout` when its own wait
+ * ends, not the run: keep waiting until the rule's deadline.
+ */
+export async function runDelivery(api: any, claim: any): Promise<{ kind: "completed" } | { kind: "failed-retryable"; error: Error }> {
+  const delivery: Delivery = claim.payload;
+  const sessionKey = `agent:${delivery.agent}:subagent:uni-mail-${delivery.eventId}`;
+  const run = await api.runtime.subagent.run({ sessionKey, message: delivery.message, deliver: false });
+  const deadline = Date.now() + delivery.timeoutSeconds * 1000;
+  let waited: any = { status: "pending" };
+  while ((waited.status === "pending" || waited.status === "timeout") && Date.now() < deadline) {
+    waited = await api.runtime.subagent.waitForRun({ runId: run.runId, timeoutMs: Math.min(60_000, deadline - Date.now()) });
+  }
+  if (waited.status !== "ok") {
+    return { kind: "failed-retryable", error: new Error(`run ${run.runId} ${waited.status}${waited.error ? `: ${waited.error}` : ""}`) };
+  }
+  const { messages } = await api.runtime.subagent.getSessionMessages({ sessionKey: run.sessionKey ?? sessionKey, limit: 1 });
+  const reply = messages?.at(-1);
+  const text = typeof reply?.content === "string" ? reply.content : (reply?.content ?? []).map((part: any) => part?.text ?? "").join("");
+  if (/^\s*AUTOMATION_FAILED/.test(text)) {
+    return { kind: "failed-retryable", error: new Error(text.trim().slice(0, 1000)) };
+  }
+  api.logger.info(`uni-mail: ${delivery.eventType} ${delivery.mailId || delivery.account} handled by ${delivery.agent}`);
+  return { kind: "completed" };
+}
+
 /** The service: start() runs the loop until the scheduler's signal aborts. */
 export function inboundService(api: any, client: () => MailClient, rules: () => Rule[]) {
   let stop: AbortController | undefined;
   let loop: Promise<void> | undefined;
-
-  async function runDelivery(claim: any): Promise<{ kind: "completed" } | { kind: "failed-retryable"; error: Error }> {
-    const delivery: Delivery = claim.payload;
-    const sessionKey = `agent:${delivery.agent}:subagent:uni-mail-${delivery.eventId}`;
-    const run = await api.runtime.subagent.run({ sessionKey, message: delivery.message, deliver: false });
-    const deadline = Date.now() + delivery.timeoutSeconds * 1000;
-    let waited: any = { status: "pending" };
-    while (waited.status === "pending" && Date.now() < deadline) {
-      waited = await api.runtime.subagent.waitForRun({ runId: run.runId, timeoutMs: Math.min(60_000, deadline - Date.now()) });
-    }
-    if (waited.status !== "ok") {
-      return { kind: "failed-retryable", error: new Error(`run ${run.runId} ${waited.status}${waited.error ? `: ${waited.error}` : ""}`) };
-    }
-    const { messages } = await api.runtime.subagent.getSessionMessages({ sessionKey: run.sessionKey ?? sessionKey, limit: 1 });
-    const reply = messages?.at(-1);
-    const text = typeof reply?.content === "string" ? reply.content : (reply?.content ?? []).map((part: any) => part?.text ?? "").join("");
-    if (/^\s*AUTOMATION_FAILED/.test(text)) {
-      return { kind: "failed-retryable", error: new Error(text.trim().slice(0, 1000)) };
-    }
-    api.logger.info(`uni-mail: ${delivery.eventType} ${delivery.mailId || delivery.account} handled by ${delivery.agent}`);
-    return { kind: "completed" };
-  }
 
   async function follow(signal: AbortSignal, logger: any) {
     const queue = openDeliveryQueue(api);
     const longest = Math.max(900, ...rules().map((rule) => rule.timeoutSeconds)) * 1000;
     const drain = api.runtime.state.openChannelIngressDrain({
       queue,
-      dispatchClaimedEvent: (claim: any) => runDelivery(claim),
+      dispatchClaimedEvent: (claim: any) => runDelivery(api, claim),
       deriveLaneKey: (record: any) => record.payload?.agent,
       // Without deadLetterMinAgeMs the drain keeps retrying for a day (its default) after the third attempt.
       retryPolicy: { maxAttempts: 3, baseMs: 60_000, maxMs: 15 * 60_000, deadLetterMinAgeMs: 0 },
@@ -170,8 +174,10 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
           }
           await drain.drainOnce({ shouldStop: () => signal.aborted });
         } catch (error: any) {
-          // A config reload replaces this plugin's runtime: the old loop ends quietly.
-          if (signal.aborted || /no longer active/.test(String(error?.message))) break;
+          // A config reload stops the old service (its signal aborts) and starts a new one.
+          // Anything else, even a runtime that is not active yet, is retried: a follower that
+          // ends quietly leaves new mail without runs and nobody notices.
+          if (signal.aborted) break;
           logger.warn(`uni-mail: ${error?.message ?? error}; trying again in ${ERROR_PAUSE_MS / 1000} s`);
           await sleep(ERROR_PAUSE_MS, signal);
         }
@@ -198,8 +204,9 @@ export function inboundService(api: any, client: () => MailClient, rules: () => 
       stop = new AbortController();
       context.scheduler?.signal?.addEventListener("abort", () => stop?.abort(), { once: true });
       // Never let the loop reject: an unhandled rejection stops the whole gateway.
+      context.logger.info(`uni-mail: starting the new-mail follower`);
       loop = follow(stop.signal, context.logger).catch((error: any) => {
-        if (!/no longer active/.test(String(error?.message))) context.logger.warn(`uni-mail: stopped following: ${error?.stack ?? error}`);
+        context.logger.warn(`uni-mail: stopped following: ${error?.stack ?? error}`);
       });
     },
     async stop() {

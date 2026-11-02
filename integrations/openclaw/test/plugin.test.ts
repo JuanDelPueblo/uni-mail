@@ -9,7 +9,7 @@ import { after, before, describe, test } from "node:test";
 
 import { accessFor, normalizeAllow, RateLimiter } from "../src/access.ts";
 import { MailClient } from "../src/client.ts";
-import { DEFAULT_MESSAGE, deliveriesFor, parseRules } from "../src/inbound.ts";
+import { DEFAULT_MESSAGE, deliveriesFor, parseRules, runDelivery } from "../src/inbound.ts";
 import { pageOperations, registerPageOperations } from "../src/page.ts";
 import { mailTools } from "../src/tools.ts";
 
@@ -198,6 +198,41 @@ describe("rules", () => {
     const auth = deliveriesFor({ event_id: "e2", event_type: "mail.auth", account: "gmail", mail_id: "", data: { detail: "sign in again" } }, rules);
     assert.deepEqual(auth.map((item) => item.agent), ["main"]);
     assert.ok(auth[0].message.includes("sign in again"));
+  });
+});
+
+describe("runs", () => {
+  const claim = { payload: { agent: "mail-triage", eventId: "e1", eventType: "mail.new", account: "university", mailId: "university.1", message: "m", timeoutSeconds: 900 } };
+  const fakeApi = (statuses: string[], reply: string) => {
+    const waits: string[] = [];
+    return {
+      waits,
+      logger: { info() {}, warn() {} },
+      runtime: {
+        subagent: {
+          run: async () => ({ runId: "r1" }),
+          waitForRun: async () => {
+            const status = statuses.shift() ?? "ok";
+            waits.push(status);
+            return { status };
+          },
+          getSessionMessages: async () => ({ messages: [{ role: "assistant", content: [{ type: "text", text: reply }] }] }),
+        },
+      },
+    };
+  };
+
+  test("a wait that times out is not a failed run: keep waiting", async () => {
+    const api = fakeApi(["timeout", "timeout", "ok"], "NO_REPLY");
+    assert.deepEqual(await runDelivery(api, claim), { kind: "completed" });
+    assert.deepEqual(api.waits, ["timeout", "timeout", "ok"]);
+  });
+
+  test("an error or AUTOMATION_FAILED is a failed run", async () => {
+    assert.equal((await runDelivery(fakeApi(["error"], ""), claim)).kind, "failed-retryable");
+    const failed: any = await runDelivery(fakeApi(["ok"], "AUTOMATION_FAILED\nno access"), claim);
+    assert.equal(failed.kind, "failed-retryable");
+    assert.match(failed.error.message, /no access/);
   });
 });
 

@@ -31,7 +31,7 @@ GMAIL = "tony@gmail.example"
 FRIEND = "friend@example.org"
 
 
-def html_only() -> Message:
+def html_only(uid: int = 9) -> Message:
     original = EmailMessage()
     original["Date"] = f"{date.today().strftime('%a, %d %b %Y')} 09:00:00 +0000"
     original["From"] = "Registrar <registrar@example.edu>"
@@ -41,7 +41,7 @@ def html_only() -> Message:
     original.set_content("<html><head><style>p{color:red}</style><script>alert('x')</script></head>"
                          "<body><p>Fees are <b>due</b> Friday.</p><img src='http://tracker.example/p.gif'></body></html>",
                          subtype="html")
-    return Message(9, date.today(), "Fwd: Fw: Fees due", sender="Registrar <registrar@example.edu>", _raw=original.as_bytes())
+    return Message(uid, date.today(), "Fwd: Fw: Fees due", sender="Registrar <registrar@example.edu>", _raw=original.as_bytes())
 
 
 class ForwardServiceTest(unittest.TestCase):
@@ -49,7 +49,7 @@ class ForwardServiceTest(unittest.TestCase):
         FakeSMTP.instances, FakeSMTP.refuse_auth, FakeSMTP.refuse = [], False, {}
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
-        self.box = Mailbox(user=USER, token="good-access", messages=[*sample_messages(), html_only()])
+        self.box = Mailbox(user=USER, token="good-access", messages=[*sample_messages(), html_only(), html_only(10)])
         self.imap = FakeIMAPServer(self.box)
         self.tokens = FakeTokenEndpoint(code="good-code", access_token="good-access")
         provider = dataclasses.replace(auth.PROVIDERS["microsoft"], token_endpoint=self.tokens.url)
@@ -183,6 +183,16 @@ class ForwardServiceTest(unittest.TestCase):
         self.assertFalse(again["forwarded"])
         self.assertEqual(again["already_forwarded"], [FRIEND.upper()])
         self.assertIn("already forwarded", again["message"])
+        self.assertEqual(len(FakeSMTP.instances), 1)
+
+    def test_another_copy_of_the_same_mail_is_not_forwarded_again(self):
+        copies = [mail["id"] for mail in self.service.handle({"op": "list", "account": "uni"})["messages"]
+                  if mail["subject"] == "Fwd: Fw: Fees due"]
+        self.assertEqual(len(copies), 2)
+        first = self.service.handle({"op": "forward", "id": copies[0], "account": "gmail", "to": FRIEND})
+        self.assertTrue(first["forwarded"], first)
+        second = self.service.handle({"op": "forward", "id": copies[1], "account": "gmail", "to": FRIEND})
+        self.assertEqual((second["forwarded"], second["already_forwarded"]), (False, [FRIEND]))
         self.assertEqual(len(FakeSMTP.instances), 1)
 
     def test_a_new_recipient_still_gets_it_and_the_old_one_is_skipped(self):

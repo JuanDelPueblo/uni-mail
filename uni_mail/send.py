@@ -197,8 +197,11 @@ class ForwardLedger:
         self.path = path
         self.lock = threading.Lock()
 
-    def done(self, mail_id: str) -> set[str]:
-        """The lower-case addresses that this mail was forwarded to."""
+    def done(self, mail_id: str, original: str = "") -> set[str]:
+        """The lower-case addresses that this mail was forwarded to.
+
+        `original` (the account and the mail's own Message-ID) also matches another copy of the same mail: mailing
+        lists often deliver one message twice, under two IDs."""
         found: set[str] = set()
         try:
             lines = self.path.read_text().splitlines()
@@ -209,18 +212,18 @@ class ForwardLedger:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(entry, dict) and entry.get("mail_id") == mail_id:
+            if isinstance(entry, dict) and (entry.get("mail_id") == mail_id or (original and entry.get("original") == original)):
                 found.add(str(entry.get("to", "")).lower())
         return found
 
-    def record(self, mail_id: str, addresses: list[str], account: str, message_id: str) -> None:
+    def record(self, mail_id: str, addresses: list[str], account: str, message_id: str, original: str = "") -> None:
         self.path.parent.mkdir(mode=0o750, parents=True, exist_ok=True)
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         descriptor = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         with os.fdopen(descriptor, "a") as handle:
             for address in addresses:
                 handle.write(json.dumps({"mail_id": mail_id, "to": address, "account": account, "message_id": message_id,
-                                         "at": stamp}) + "\n")
+                                         "original": original, "at": stamp}) + "\n")
 
 
 def _xoauth2(user: str, token: str) -> Callable[..., str]:

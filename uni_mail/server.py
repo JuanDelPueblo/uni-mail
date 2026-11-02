@@ -463,7 +463,8 @@ class Service:
     def op_forward(self, request: dict[str, Any]) -> dict[str, Any]:
         """Send an indexed message, as a new message from `account`, to the recipients. The original stays untouched.
 
-        A mail that was already forwarded to an address is not sent to it again, unless `force` is set."""
+        A mail that was already forwarded to an address is not sent to it again, unless `force` is set; another copy of
+        it (the same Message-ID in the same account) counts as the same mail."""
         record = self._record(request.get("id"))
         sender = self._sender(str(request.get("account") or ""))
         to = send.parse_addresses(request.get("to"), "to")
@@ -476,8 +477,9 @@ class Service:
             raise RequestError(f"note must be text of at most {send.MAX_NOTE} characters")
         force = bool(request.get("force"))
         source = self._account(record["account"])
+        original = f"{record['account']} {record['message_id']}" if record.get("message_id") else ""
         with self.ledger.lock:
-            done = set() if force else self.ledger.done(record["id"])
+            done = set() if force else self.ledger.done(record["id"], original)
             skipped = [address for address in to if address.lower() in done]
             targets = [address for address in to if address.lower() not in done]
             if not targets:
@@ -503,7 +505,7 @@ class Service:
                                                   str(note), limit, omitted)
             refused = send.deliver(sender.cfg.address, sender.provider, sender.session, message, targets, self.smtp_factory)
             self.ledger.record(record["id"], [address for address in targets if address not in refused], sender.name,
-                               str(message["Message-ID"]))
+                               str(message["Message-ID"]), original)
         message_id = str(message["Message-ID"])
         # The body is never logged.
         log.info("forwarded mail: account=%s mail_id=%s message_id=%s to=%s subject=%r", sender.name, record["id"], message_id,

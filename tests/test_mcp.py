@@ -26,7 +26,8 @@ needs_mcp = unittest.skipUnless(Client, "the mcp package is not installed")
 
 TOOLS = {
     "mail_status", "mail_list", "mail_search", "mail_show", "mail_folders",
-    "mail_attachments", "mail_export_attachment", "mail_mark_read", "mail_mark_unread", "mail_archive", "mail_trash",
+    "mail_attachments", "mail_notes", "mail_note", "mail_export_attachment",
+    "mail_mark_read", "mail_mark_unread", "mail_archive", "mail_trash",
 }
 LONG_BODY = "x" * 100 + "END"
 
@@ -72,6 +73,8 @@ class McpTestCase(unittest.IsolatedAsyncioTestCase):
             "show": {"ok": True, "id": "university.3f2a9c1d0b7e4a55", "body": LONG_BODY, "attachments": []},
             "folders": {"ok": True, "account": "university", "folders": ["INBOX"]},
             "attachments": {"ok": True, "id": "university.3f2a9c1d0b7e4a55", "attachments": []},
+            "notes": {"ok": True, "count": 1, "notes": [{"mail_id": "university.3f2a9c1d0b7e4a55", "text": "kept"}]},
+            "note": {"ok": True, "note": {"mail_id": "university.3f2a9c1d0b7e4a55", "text": "kept", "author": "triage"}},
             "export_attachment": {"ok": True, "path": "/var/cache/a.pdf", "size": 3},
             "mark": {"ok": True, "results": {"university.3f2a9c1d0b7e4a55": {"ok": True}}},
             "archive": {"ok": True, "results": {"university.3f2a9c1d0b7e4a55": {"ok": True}}},
@@ -97,7 +100,8 @@ class ToolsTest(McpTestCase):
             self.assertTrue(tool.description, tool.name)
             self.assertIs(tool.annotations.open_world_hint, False)
             self.assertEqual(tool.annotations.read_only_hint, tool.name not in {
-                "mail_export_attachment", "mail_mark_read", "mail_mark_unread", "mail_archive", "mail_trash"})
+                "mail_note", "mail_export_attachment", "mail_mark_read", "mail_mark_unread",
+                "mail_archive", "mail_trash"})
 
     async def test_no_forbidden_tools(self):
         async with Client(mcp_server.build_server(self.daemon.path)) as client:
@@ -187,6 +191,19 @@ class ToolsTest(McpTestCase):
             {"op": "trash", "ids": ["a.b"]},
         ])
 
+    async def test_notes_and_note(self):
+        listed = await self.call("mail_notes", {"mail_id": "university.3f2a9c1d0b7e4a55", "since": "2d", "limit": 25})
+        self.assertFalse(listed.is_error)
+        self.assertEqual(listed.structured_content["count"], 1)
+        written = await self.call("mail_note", {
+            "mail_id": "university.3f2a9c1d0b7e4a55", "text": "kept", "author": "triage"})
+        self.assertFalse(written.is_error)
+        self.assertEqual(written.structured_content["note"]["text"], "kept")
+        self.assertEqual(self.daemon.requests, [
+            {"op": "notes", "limit": 25, "id": "university.3f2a9c1d0b7e4a55", "since": "2d"},
+            {"op": "note", "id": "university.3f2a9c1d0b7e4a55", "text": "kept", "author": "triage"},
+        ])
+
     async def test_daemon_error(self):
         self.daemon.responses["show"] = {"ok": False, "error": "message not found: nope.0"}
         result = await self.call("mail_show", {"mail_id": "nope.0"})
@@ -229,7 +246,8 @@ class ScopeTest(McpTestCase):
 
     async def test_read_only_leaves_out_the_writes(self):
         self.assertEqual(await self.tools(read_only=True), TOOLS - {
-            "mail_export_attachment", "mail_mark_read", "mail_mark_unread", "mail_archive", "mail_trash"})
+            "mail_note", "mail_export_attachment", "mail_mark_read", "mail_mark_unread",
+            "mail_archive", "mail_trash"})
         self.assertEqual(await self.tools(accounts=("university",)), TOOLS)
 
     async def test_status_shows_only_the_accounts_served(self):
@@ -264,6 +282,8 @@ class ScopeTest(McpTestCase):
             ("mail_folders", {"account": "gmail"}),
             ("mail_show", {"mail_id": "gmail.3f2a9c1d0b7e4a55"}),
             ("mail_attachments", {"mail_id": "gmail.3f2a9c1d0b7e4a55"}),
+            ("mail_notes", {"mail_id": "gmail.3f2a9c1d0b7e4a55"}),
+            ("mail_note", {"mail_id": "gmail.3f2a9c1d0b7e4a55", "text": "kept"}),
             ("mail_export_attachment", {"mail_id": "gmail.3f2a9c1d0b7e4a55", "index": 0}),
             ("mail_mark_read", {"mail_ids": ["university.3f2a9c1d0b7e4a55", "gmail.3f2a9c1d0b7e4a55"]}),
             ("mail_mark_unread", {"mail_ids": ["gmail.3f2a9c1d0b7e4a55"]}),

@@ -330,6 +330,41 @@ def build_server(socket: str = "", log_level: str = "WARNING", send: SendPolicy 
             return client().attachments(mail_id)
         return run(call)
 
+    @server.tool(annotations=reads)
+    def mail_notes(mail_id: str = "", since: str = "", limit: int = 100) -> dict[str, Any]:
+        """List notes kept on messages, newest first: what an agent or person decided about each mail.
+
+        mail_id: optional ID to return only the notes of that message.
+        since: 2d, 12h, yesterday or an ISO date such as 2026-09-01.
+        limit: 1 to 500 notes (default 100).
+        """
+        def call() -> dict[str, Any]:
+            if not 1 <= limit <= MAX_LIMIT:
+                raise ValueError(f"limit must be from 1 to {MAX_LIMIT}")
+            target = mail_id.strip()
+            if target:
+                check_mail(target)
+            return client().notes(mail_id=target, accounts=list(scope) if scope else None, since=since, limit=limit)
+        return run(call)
+
+    @mutate
+    def mail_note(mail_id: str, text: str, author: str = "") -> dict[str, Any]:
+        """Keep a short note on a message: what you decided and why. Others read it with mail_notes.
+
+        mail_id: the ID of the message (even if it has left the index).
+        text: non-empty note text.
+        author: optional short label for who wrote the note (for example `mail-triage`).
+        """
+        def call() -> dict[str, Any]:
+            if not isinstance(mail_id, str) or not mail_id.strip():
+                raise ValueError("mail_id must be a non-empty mail ID")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("text must not be empty")
+            identifier = mail_id.strip()
+            check_mail(identifier)
+            return {"note": client().note(identifier, text.strip(), author=author.strip())}
+        return run(call)
+
     @mutate
     def mail_export_attachment(mail_id: str, index: int) -> dict[str, Any]:
         """Save one attachment in the export cache of the service and return its path, name, type and size.
